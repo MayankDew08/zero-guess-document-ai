@@ -10,10 +10,20 @@ The system answers questions across multiple PDFs using only verifiable evidence
 ## Non-negotiable constraints
 
 1. **No paid/external AI APIs.** No OpenAI, Anthropic, Gemini, Cohere, Voyage, etc. Use local open-source models only (Ollama / sentence-transformers / HuggingFace local).
-2. **Every claim must be cited.** Each answer claim links to `document_name`, `page_number`, and a **verbatim quote** from that page.
+2. **Every claim must be cited.** Each answer claim links to `doc_name`, `page`, and a backend-resolved **verbatim quote** from that page.
 3. **Never invent evidence.** If a quote cannot be verified in the source, do not show it. If evidence is missing or contradictory, abstain explicitly.
-4. **Faithfulness is measured, not claimed.** Compute `% sentences backed by >=1 verified source quote`.
+4. **Faithfulness is measured, not claimed.** Compute `% sentences backed by >=1 verified source quote`. Report `faithfulness_pct` and `blocked_claims_count`.
 5. **Local-first demo.** The app must run on a laptop with no internet dependency after models are downloaded.
+6. **16 GB RAM discipline.** Load HuggingFace models (`BAAI/bge-reranker-v2-m3`, `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`) lazily as singletons in `fp16` where supported (CPU fallback cleanly). Never duplicate models in memory.
+
+## Finalized model stack
+
+| Role | Model | Notes |
+|---|---|---|
+| Generator LLM | `qwen2.5:7b-instruct` via Ollama | Fallback: `qwen2.5:3b-instruct` |
+| Embeddings (EN+HI) | `BAAI/bge-m3` | `sentence-transformers` or Ollama backend |
+| Reranker (EN+HI) | `BAAI/bge-reranker-v2-m3` | Top-12 hybrid -> top-5; CRAG abstention gate |
+| NLI / contradiction (EN+HI) | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | True 3-class `entailment`/`neutral`/`contradiction`. **Never** use reranker as entailment proxy |
 
 ## Repo layout
 
@@ -21,29 +31,33 @@ The system answers questions across multiple PDFs using only verifiable evidence
 .
 ├── AGENTS.md
 ├── README.md
+├── OVERNIGHT_REPORT.md
 ├── docs/                    # Product, architecture, roadmap, eval, demo
 ├── backend/                 # FastAPI + Python pipeline
 │   ├── app/
 │   │   ├── main.py          # FastAPI app entry
 │   │   ├── api/             # Route handlers
-│   │   ├── ingestion/       # PDF parsing, chunking
-│   │   ├── retrieval/       # Embeddings, vector/BM25 search
-│   │   ├── qa/              # Answer generation, claim extraction
-│   │   ├── verification/    # Citation check, NLI/support, abstention
-│   │   ├── contradictions/  # Conflict detection
-│   │   ├── amendments/      # Amendment graph + resolver
-│   │   ├── scoring/         # Faithfulness score
+│   │   ├── core/            # Config, logging
+│   │   ├── ingestion/       # PDF parsing, chunking, sentence spans
+│   │   ├── retrieval/       # Embeddings, BM25, hybrid, reranker
+│   │   ├── qa/              # LLM client, prompt, claim drafting
+│   │   ├── verification/    # Citation resolve, NLI, numeric/date, abstention
+│   │   ├── contradictions/  # Amendment-aware conflict detection
+│   │   ├── amendments/      # Regex extraction, networkx DAG, resolver
+│   │   ├── scoring/         # Faithfulness + blocked counts
+│   │   ├── calculator/      # Optional deterministic calculator
 │   │   └── models/          # Pydantic schemas
 │   ├── tests/
 │   ├── requirements.txt
-│   └── pyproject.toml
+│   ├── pyproject.toml
+│   └── .env.example
 ├── frontend/                # Vite + React + TypeScript + Tailwind
 │   └── src/
 ├── data/
-│   ├── samples/             # Sample PDFs for demo/eval
-│   ├── index/               # Generated vector index / sqlite
+│   ├── samples/             # Generated demo PDFs
+│   ├── index/               # Generated index / sqlite / vectors
 │   └── reports/             # Generated reports
-└── scripts/                 # Dev/eval scripts
+└── scripts/                 # Sample generation, smoke tests
 ```
 
 ## Commands
@@ -55,7 +69,7 @@ Run from repo root unless noted.
 cd backend
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # set OLLAMA_MODEL, EMBEDDING_MODEL, DATA_DIR
+cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -70,37 +84,35 @@ npm run dev   # http://localhost:5173
 ```bash
 cd backend
 pytest -q
-pytest tests/test_verification.py -q   # focus on verification
 ```
 
-### Lint/format (if configured)
+### Lint / build
 ```bash
-cd backend && ruff check . && ruff format .
-cd frontend && npm run lint
+cd backend && ruff check .
+cd frontend && npm run lint && npm run build
 ```
 
 ## Architecture rules
 
 - **Backend is the source of truth.** Frontend never calls an LLM directly.
-- **Verification is deterministic where possible.** Quote matching, number/date comparison, faithfulness scoring must be code, not LLM vibes.
+- **Verification is deterministic where possible.** Quote resolution, number/date comparison, faithfulness scoring must be code, not LLM vibes.
 - **LLM outputs structured JSON.** Use Pydantic schemas and validate/repair. Never trust free-form citations.
 - **LLM cites sentence_ids, never free-typed quotes.** The LLM cites `sentence_id` values (`chunk_id#sN`). The backend deterministically resolves `quote`, `doc_name`, `page`, and `bbox` from stored chunks.
-- **Citations reference stored chunks.** A citation must resolve to a stored chunk/sentence with known `doc_name`, `page`, `text`, and optional `bbox`.
-- **Contradiction detection is amendment-aware.** Contradiction detection must consult the amendment graph first—conflicts explained by an `AMENDS`/`SUPERSEDES` edge are routed to Amendment Chains, not Contradiction Alerts.
-- **Abstention beats hallucination.** If verification fails, the claim is blocked or the answer becomes "I don't have proof of X. Missing: ..."
+- **Citations reference stored chunks/sentences.** A citation must resolve to stored data with known `doc_name`, `page`, `text`, and optional `bbox`.
+- **Contradiction detection is amendment-aware.** Check amendment graph first. Conflicts explained by `AMENDS`/`SUPERSEDES`/`REPLACES` edges route to Amendment Chains, not Contradiction Alerts.
+- **Abstention beats hallucination.** If verification fails, block the claim or return explicit "I don't have proof..." with missing evidence.
+- **Provider interfaces for testability.** Embeddings, reranker, NLI, and Ollama LLM must have clean interfaces so tests use lightweight fakes/fixtures without multi-GB model downloads.
 
-## Coding conventions
+## Deterministic verification gates (exact order)
 
-- Python: type hints, small pure functions, Pydantic models for API/schema boundaries.
-- Keep modules narrow: parsing != retrieval != verification != UI.
-- Prefer simple, inspectable heuristics before fancy models. Hackathon judges can read code.
-- Add tests for every verification rule and contradiction/amendment case.
-- Do not add paid SDKs, telemetry, or cloud dependencies.
-- Log intermediate artifacts (retrieved chunks, draft claims, verification results) to aid debugging and demo.
+1. **Gate 1 (CRAG Pre-Generation):** If top reranker score `< RERANK_ABSTAIN_THRESHOLD`, abstain immediately without calling the LLM.
+2. **Gate 2 (Citation Resolution):** Resolve `source_ids` to stored verbatim sentences. Invalid/missing IDs block the claim.
+3. **Gate 3 (NLI + Numeric/Date Check):** Run `mDeBERTa-v3-base-mnli-xnli(premise=quote, hypothesis=claim)` AND deterministic regex verification that all numbers, percentages, currencies, durations, and dates in `claim` match `quote`. Block failing claims.
+4. **Gate 4 (Abstention):** If 0 claims survive, return explicit `"I don't have proof..."` with `missing_evidence`.
 
 ## Data & evidence format
 
-Every retrieved/stored chunk should carry at minimum:
+Every retrieved/stored chunk carries at minimum:
 
 ```json
 {
@@ -122,9 +134,7 @@ Every retrieved/stored chunk should carry at minimum:
 }
 ```
 
-Chunks must include deterministic sentence spans. You may also reference sentences by the `chunk_id#sN` convention; either form is acceptable as long as sentence IDs are stable, unique, and resolved from stored chunk text.
-
-Every claim/citation shown to user should carry:
+Every claim/citation shown to user carries:
 
 ```json
 {
@@ -153,20 +163,12 @@ Every claim/citation shown to user should carry:
 - [ ] Claim is entailed by quote, or explicitly marked unsupported/contradicted.
 - [ ] Numbers/dates in claim match numbers/dates in cited evidence.
 - [ ] 1 claim = 1 atomic sentence so claim-level and sentence-level faithfulness are identical.
-- [ ] Return both `faithfulness_pct` (verified shown sentences / total shown sentences) and `blocked_claims_count` (draft claims blocked by verifier).
+- [ ] Return both `faithfulness_pct` and `blocked_claims_count`.
 - [ ] UI shows abstention clearly; no blank/confident-sounding guess.
 
 ## When blocked
 
-- If a model is too slow/heavy: switch to smaller quantized model; keep interface same.
+- If a model is too slow/heavy: switch to smaller quantized/fallback model; keep interface same.
 - If PDF table extraction is messy: preserve raw text and mark table chunks; do not crash.
 - If contradiction/amendment detection is ambiguous: show "possible conflict" with both quotes and low confidence, but never hide it.
 - If you are unsure: add a failing test or TODO with explicit acceptance criteria, not a silent assumption.
-
-## Read next
-
-- `docs/ROADMAP.md` — hour-by-hour plan and cut lines.
-- `docs/PRD.md` — must-have/bonus requirements mapped to acceptance tests.
-- `docs/ARCHITECTURE.md` — components and data flow.
-- `docs/VERIFICATION_PIPELINE.md` — the core zero-guessing logic.
-- `docs/AGENT_TASKS.md` — copy-paste task prompts for coding agents.

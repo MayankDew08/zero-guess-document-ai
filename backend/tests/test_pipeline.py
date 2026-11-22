@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+from app.core.config import settings
+from app.core.store import AppStore
+from app.models.schemas import AmendmentEdge, Chunk, Document, DraftClaim, Sentence
+from app.qa.llm import FakeLLMProvider
+from app.qa.service import ask_question
+from app.retrieval.embeddings import FakeEmbeddingProvider
+from app.retrieval.reranker import FakeRerankerProvider
+from app.verification.nli import FakeNLIProvider
+from app.verification.numeric import check_numeric_date_match
+from app.verification.pipeline import resolve_and_verify_claims
+
+
+def _make_store() -> AppStore:
+    store = AppStore()
+    doc = Document(doc_id="doc1", doc_name="Doc1.pdf", file_path="/tmp/doc1.pdf", num_pages=1, ingested_at="now", chunks_created=1)
+    chunk = Chunk(
+        chunk_id="doc1_p1_c1",
+        doc_id="doc1",
+        doc_name="Doc1.pdf",
+        page=1,
+        text="The late payment fee is 2% per month after the due date.",
+        normalized_text="the late payment fee is 2% per month after the due date.",
+        sentences=[
+            Sentence(sentence_id="doc1_p1_c1#s0", chunk_id="doc1_p1_c1", text="The late payment fee is 2% per month after the due date.", page=1)
+        ],
+    )
+    store.add_document(doc, [chunk])
+    return store
+
+
+def test_citation_resolution_blocks_invalid_source_id():
+    store = _make_store()
+    nli = FakeNLIProvider()
+    drafts = [DraftClaim(claim_id="c1", text="The late payment fee is 2% per month.", claim_type="numeric", source_ids=["doc1_p1_c1#s999"])]
+    shown, blocked = resolve_and_verify_claims(drafts, store, nli)
+    assert not shown
+    assert len(blocked) == 1
+    assert blocked[0].status == "blocked"
+    assert "unresolved_source_id" in (blocked[0].reason or "")
+
+
+def test_numeric_mismatch_blocks_claim():
+    ok, reason = check_numeric_date_match("The fee is 5% per month.", "The late payment fee is 2% per month after the due date.")
+    assert not ok
+    assert reason is not None
+
+
+def test_numeric_match_passes():
+    ok, reason = check_numeric_date_match("The fee is 2% per month.", "The late payment fee is 2% per month after the due date.")
+    assert ok
+    assert reason is None
+
+
+def test_nli_and_numeric_gate_blocks_mismatch_claim():
+    store = _make_store()
+    nli = FakeNLIProvider()
+    drafts = [DraftClaim(claim_id="c1", text="The late payment fee is 5% per month.", claim_type="numeric", source_ids=["doc1_p1_c1#s0"])]
+    shown, blocked = resolve_and_verify_claims(drafts, store, nli)
+    # should not be supported due to numeric mismatch or NLI contradiction
+    assert all(c.status != "supported" for c in shown)
+    assert len(blocked) == 1 or any(c.status in {"contradicted", "blocked"} for c in shown)
+
+
+def test_crag_gate_abstains_below_threshold(monkeypatch):
+    store = _make_store()
+    # Force high threshold so CRAG fails
+    monkeypatch.setattr(settings, "rerank_abstain_threshold", 0.99)
+    resp = ask_question(
+        question="What is the late payment fee?",
+        app_store=store,
+        embedding_provider=FakeEmbeddingProvider(),
+        reranker_provider=FakeRerankerProvider(),
+        nli_provider=FakeNLIProvider(),
+        llm_provider=FakeLLMProvider(responses=[{"claims": [{"claim_id": "c1", "text": "The late payment fee is 2% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]}], "missing_evidence": []}]),
+    )
+    assert resp.status == "abstained"
+    assert resp.faithfulness_pct is None
+
+
+def test_amendment_explained_conflict_not_contradiction(monkeypatch):
+    store = AppStore()
+    doc1 = Document(doc_id="policy_v1", doc_name="Policy_v1.pdf", file_path="/tmp/v1.pdf", num_pages=1, ingested_at="now", chunks_created=1)
+    doc2 = Document(doc_id="policy_v2", doc_name="Policy_v2.pdf", file_path="/tmp/v2.pdf", num_pages=1, ingested_at="now", chunks_created=1)
+    c1 = Chunk(chunk_id="policy_v1_p1_c1", doc_id="policy_v1", doc_name="Policy_v1.pdf", page=1,
+               text="The interest rate is 5% per year.", normalized_text="the interest rate is 5% per year.",
+               sentences=[Sentence(sentence_id="policy_v1_p1_c1#s0", chunk_id="policy_v1_p1_c1", text="The interest rate is 5% per year.", page=1)])
+    c2 = Chunk(chunk_id="policy_v2_p1_c1", doc_id="policy_v2", doc_name="Policy_v2.pdf", page=1,
+               text="The interest rate is 7% per year. This amends Policy_v1 effective 2025-01-01.", normalized_text="the interest rate is 7% per year. this amends policy_v1 effective 2025-01-01.",
+               sentences=[Sentence(sentence_id="policy_v2_p1_c1#s0", chunk_id="policy_v2_p1_c1", text="The interest rate is 7% per year.", page=1),
+                          Sentence(sentence_id="policy_v2_p1_c1#s1", chunk_id="policy_v2_p1_c1", text="This amends Policy_v1 effective 2025-01-01.", page=1)])
+    store.add_document(doc1, [c1])
+    store.add_document(doc2, [c2])
+    store.amendment_edges = [AmendmentEdge(edge_id="ame_1", from_doc_id="policy_v1", from_doc_name="Policy_v1.pdf", to_doc_id="policy_v2", to_doc_name="Policy_v2.pdf", relation="AMENDS", effective_date="2025-01-01", change_subject="interest rate", evidence_chunk_id="policy_v2_p1_c1", evidence_sentence_id="policy_v2_p1_c1#s1", evidence_page=1, evidence_quote="This amends Policy_v1 effective 2025-01-01.")]
+
+    monkeypatch.setattr(settings, "rerank_abstain_threshold", 0.0)
+    resp = ask_question(
+        question="What is the interest rate?",
+        app_store=store,
+        embedding_provider=FakeEmbeddingProvider(),
+        reranker_provider=FakeRerankerProvider(),
+        nli_provider=FakeNLIProvider(),
+        llm_provider=FakeLLMProvider(responses=[{"claims": [
+            {"claim_id": "c1", "text": "The interest rate is 5% per year.", "claim_type": "numeric", "source_ids": ["policy_v1_p1_c1#s0"]},
+            {"claim_id": "c2", "text": "The interest rate is 7% per year.", "claim_type": "numeric", "source_ids": ["policy_v2_p1_c1#s0"]},
+        ], "missing_evidence": []}]),
+    )
+    # Should not flag as contradiction because amendment explains it
+    assert not any(c.status == "confirmed" and c.subject == "interest rate" for c in resp.contradictions)
+
+
+def test_faithfulness_reports_blocked_claims(monkeypatch):
+    store = _make_store()
+    monkeypatch.setattr(settings, "rerank_abstain_threshold", 0.0)
+    resp = ask_question(
+        question="What is the late payment fee?",
+        app_store=store,
+        embedding_provider=FakeEmbeddingProvider(),
+        reranker_provider=FakeRerankerProvider(),
+        nli_provider=FakeNLIProvider(),
+        llm_provider=FakeLLMProvider(responses=[{"claims": [
+            {"claim_id": "c1", "text": "The late payment fee is 2% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]},
+            {"claim_id": "c2", "text": "The late payment fee is 10% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]},
+        ], "missing_evidence": []}]),
+    )
+    # The 10% claim must not be supported; it should be blocked or contradicted
+    assert resp.faithfulness_pct is not None
+    assert resp.verified_sentences_count <= 1
+    assert resp.blocked_claims_count >= 1 or any(c.status != "supported" for c in resp.claims + resp.blocked_claims)

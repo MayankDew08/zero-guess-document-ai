@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class BBox(BaseModel):
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    page_width: float
+    page_height: float
+
+
+class Sentence(BaseModel):
+    sentence_id: str
+    chunk_id: str
+    text: str
+    page: int
+    bbox: BBox | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+
+
+class Chunk(BaseModel):
+    chunk_id: str
+    doc_id: str
+    doc_name: str
+    page: int
+    section: str | None = None
+    text: str
+    normalized_text: str = ""
+    chunk_type: Literal["paragraph", "table", "heading", "list", "other"] = "paragraph"
+    bbox: BBox | None = None
+    sentences: list[Sentence] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
+class Document(BaseModel):
+    doc_id: str
+    doc_name: str
+    file_path: str
+    num_pages: int
+    ingested_at: str
+    chunks_created: int = 0
+    checksum: str | None = None
+
+
+class RetrievedChunk(BaseModel):
+    chunk: Chunk
+    score: float = 0.0
+    semantic_score: float | None = None
+    bm25_score: float | None = None
+    rerank_score: float | None = None
+    retrieval_rank: int = 0
+
+
+class RetrievalResult(BaseModel):
+    query: str
+    chunks: list[RetrievedChunk] = Field(default_factory=list)
+    total_indexed_chunks: int = 0
+    crag_passed: bool = True
+    max_rerank_score: float | None = None
+
+
+class Citation(BaseModel):
+    sentence_id: str
+    chunk_id: str
+    doc_id: str
+    doc_name: str
+    page: int
+    quote: str
+    bbox: BBox | None = None
+    verification_status: Literal["verified", "unverified", "failed"] = "unverified"
+    support_status: Literal["supported", "contradicted", "not_enough_info", "unchecked"] = "unchecked"
+    nli_label: str | None = None
+    nli_scores: dict[str, float] | None = None
+    verification_notes: str | None = None
+
+
+class DraftClaim(BaseModel):
+    claim_id: str
+    text: str
+    claim_type: Literal["factual", "numeric", "date", "rule", "definition", "other"] = "factual"
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class DraftAnswer(BaseModel):
+    claims: list[DraftClaim] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+
+
+class Claim(BaseModel):
+    claim_id: str
+    text: str
+    claim_type: str = "factual"
+    status: Literal["supported", "contradicted", "unsupported", "abstained", "blocked"]
+    source_ids: list[str] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class ContradictionValue(BaseModel):
+    doc_id: str
+    doc_name: str
+    page: int
+    chunk_id: str
+    sentence_id: str | None = None
+    quote: str
+    bbox: BBox | None = None
+    normalized_value: str | None = None
+
+
+class Contradiction(BaseModel):
+    contradiction_id: str
+    subject: str
+    conflict_type: Literal["number", "date", "rule", "eligibility", "definition", "other"] = "other"
+    severity: Literal["high", "medium", "low"] = "medium"
+    status: Literal["confirmed", "possible"] = "possible"
+    explanation: str
+    values: list[ContradictionValue] = Field(default_factory=list)
+    affected_claim_ids: list[str] = Field(default_factory=list)
+
+
+class AmendmentEdge(BaseModel):
+    edge_id: str
+    from_doc_id: str
+    from_doc_name: str
+    to_doc_id: str
+    to_doc_name: str
+    relation: Literal["AMENDS", "SUPERSEDES", "REPLACES"] = "AMENDS"
+    effective_date: str | None = None
+    change_subject: str | None = None
+    old_value: str | None = None
+    new_value: str | None = None
+    evidence_chunk_id: str
+    evidence_sentence_id: str | None = None
+    evidence_page: int
+    evidence_quote: str
+    confidence: float = 1.0
+
+
+class AmendmentChain(BaseModel):
+    chain_id: str
+    subject: str
+    doc_ids_ordered: list[str] = Field(default_factory=list)
+    edges: list[AmendmentEdge] = Field(default_factory=list)
+    active_doc_id: str | None = None
+    active_doc_name: str | None = None
+    active_rule: str | None = None
+    status: Literal["resolved", "ambiguous", "unresolved"] = "resolved"
+
+
+class AskRequest(BaseModel):
+    question: str
+    doc_ids: list[str] | None = None
+    top_k: int = 8
+    debug: bool = False
+
+
+class AskResponse(BaseModel):
+    request_id: str
+    question: str
+    status: Literal["answered", "partially_answered", "abstained", "contradicted"]
+    answer: str
+    claims: list[Claim] = Field(default_factory=list)
+    blocked_claims: list[Claim] = Field(default_factory=list)
+    contradictions: list[Contradiction] = Field(default_factory=list)
+    amendment_chains: list[AmendmentChain] = Field(default_factory=list)
+    faithfulness_pct: float | None = None
+    verified_sentences_count: int = 0
+    total_shown_sentences: int = 0
+    blocked_claims_count: int = 0
+    missing_evidence: list[str] = Field(default_factory=list)
+    debug: dict | None = None
+
+
+class IngestResponse(BaseModel):
+    documents: list[Document] = Field(default_factory=list)
+    errors: list[dict] = Field(default_factory=list)
+
+
+class ReportRequest(BaseModel):
+    request_id: str | None = None
+    response: AskResponse
+    format: Literal["html", "json", "markdown"] = "html"
+
+
+class ReportResponse(BaseModel):
+    report_id: str
+    format: str
+    file_path: str
+    download_url: str

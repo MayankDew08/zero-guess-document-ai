@@ -8,12 +8,21 @@ A verifiable Document AI prototype that answers complex questions across multipl
 
 | Capability | What the user sees |
 |---|---|
-| Multi-document evidence retrieval | Search across several PDFs, including tables and multi-page sections. |
-| Exact citations | Every claim links to document name, page number, and verbatim quote. |
-| Contradiction detection | Conflicting numbers/dates/rules/eligibility shown side by side. |
-| Amendment chains | "Which rule applies today?" resolved with A→B→C change chain. |
-| Zero-guessing abstention | Unsupported/contradicted claims blocked with missing-evidence explanation. |
-| Faithfulness score | `% of answer sentences backed by >=1 matching source quote`. |
+| Multi-document evidence retrieval | Hybrid search across PDFs (bge-m3 + BM25 + reranker), including tables and multi-page sections. |
+| Exact citations | Every claim links to document name, page number, and backend-resolved verbatim quote. |
+| Contradiction detection | Amendment-aware conflicts shown side by side with both quotes. |
+| Amendment chains | "Which rule applies today?" resolved with A→B→C chain and active rule. |
+| Zero-guessing abstention | CRAG gate + NLI/numeric verification block unsupported claims; explicit missing-evidence response. |
+| Faithfulness score | `Faithfulness: X% (A/B verified)` + `N unsupported draft claims blocked`. |
+
+## Finalized model stack (local, no paid APIs)
+
+| Role | Model | Notes |
+|---|---|---|
+| Generator LLM | `qwen2.5:7b-instruct` (Ollama) | Fallback `qwen2.5:3b-instruct` |
+| Embeddings (EN+HI) | `BAAI/bge-m3` | sentence-transformers or Ollama backend |
+| Reranker (EN+HI) | `BAAI/bge-reranker-v2-m3` | Lazy singleton, fp16/CPU fallback, top-12 -> top-5 |
+| NLI / contradiction (EN+HI) | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | Lazy singleton, fp16/CPU fallback, true 3-class NLI |
 
 ## Quick start
 
@@ -28,11 +37,10 @@ A verifiable Document AI prototype that answers complex questions across multipl
 
 ```bash
 ollama pull qwen2.5:7b-instruct
-ollama pull bge-m3
+ollama pull bge-m3   # if using Ollama embedding backend
 ```
 
-> HuggingFace local models (`BAAI/bge-reranker-v2-m3` and `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`) auto-download on first run (and run in fp16/ONNX to fit 16 GB RAM).
-> If RAM/GPU is tight, use `qwen2.5:3b-instruct` as the generator fallback and keep prompts short.
+> HuggingFace models (`BAAI/bge-m3` when using sentence-transformers, `BAAI/bge-reranker-v2-m3`, `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`) auto-download on first run. They are loaded lazily as singletons in fp16 where supported.
 
 ### 2. Backend
 
@@ -58,56 +66,70 @@ npm run dev
 
 Frontend: http://localhost:5173
 
-## Demo flow
+### 4. Generate demo sample PDFs
 
-1. Upload 2+ PDFs (or use `data/samples/`).
-2. Ask a question that spans documents.
-3. Inspect answer: each claim has citations with page + verbatim quote.
-4. Ask a question that hits conflicting clauses — see side-by-side contradiction alert.
-5. Ask "Which rule applies today?" across amended docs — see amendment chain.
-6. Ask for something not in the docs — see explicit abstention and missing evidence.
-7. Check faithfulness score badge.
-
-See `docs/DEMO_SCRIPT.md` for the full judge demo.
-
-## Verification pipeline (short)
-
-```text
-PDFs -> Parse/Chunk (with sentence IDs + bbox) -> Index (bge-m3 + BM25) + Amendment Graph
-  -> Hybrid Retrieve -> Rerank (bge-reranker-v2-m3) -> CRAG Abstention Gate
-  -> Draft atomic sentence claims citing sentence_ids
-  -> Resolve exact quotes -> Verify (mDeBERTa NLI + number/date match)
-  -> Resolve Amendment Chain -> Detect Unresolved Contradictions
-  -> Compute Faithfulness + Blocked Count -> Render Answer
+```bash
+python scripts/generate_samples.py
 ```
 
-Full detail: `docs/VERIFICATION_PIPELINE.md`.
+Then use the UI "Load Demo Sample PDFs" button, or call `POST /api/ingest/samples`.
+
+## Verification pipeline
+
+```text
+PDFs -> Parse/Chunk (sentence IDs + bbox)
+     -> Index (bge-m3 embeddings + BM25) + Amendment Graph (regex + networkx DAG)
+     -> Hybrid Retrieve (RRF top-12)
+     -> Rerank (bge-reranker-v2-m3 top-5)
+     -> Gate 1: CRAG abstain if max_rerank_score < threshold
+     -> Draft atomic claims citing source_ids only (qwen2.5:7b-instruct JSON)
+     -> Gate 2: Resolve source_ids -> verbatim quotes/metadata (deterministic)
+     -> Gate 3: mDeBERTa NLI entailment + numeric/date regex check
+     -> Amendment-aware contradiction detection
+     -> Gate 4: Abstain if no claims survive
+     -> Faithfulness score + blocked_claims_count -> Render
+```
+
+## Tests
+
+```bash
+cd backend
+pytest -q
+ruff check .
+```
+
+Frontend build:
+
+```bash
+cd frontend
+npm run lint
+npm run build
+```
+
+Live smoke test (requires Ollama running and models pulled):
+
+```bash
+python scripts/smoke_test_live.py
+```
 
 ## Project docs
 
 | Doc | Purpose |
 |---|---|
 | [AGENTS.md](AGENTS.md) | Rules for coding agents |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 36-hour timeline, mid-eval cut line |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Timeline and cut lines |
 | [docs/PRD.md](docs/PRD.md) | Requirements and acceptance criteria |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design and data flow |
 | [docs/VERIFICATION_PIPELINE.md](docs/VERIFICATION_PIPELINE.md) | Zero-guessing verification design |
-| [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | Schemas for chunks, claims, citations, reports |
+| [docs/DATA_MODEL.md](docs/DATA_MODEL.md) | Schemas |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Backend API contract |
-| [docs/DATASET_AND_EVAL.md](docs/DATASET_AND_EVAL.md) | Sample corpus and evaluation plan |
-| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Mid-eval and final demo scripts |
-| [docs/AGENT_TASKS.md](docs/AGENT_TASKS.md) | Copy-paste tasks for coding agents |
+| [docs/DATASET_AND_EVAL.md](docs/DATASET_AND_EVAL.md) | Sample corpus and evaluation |
+| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Demo script |
 | [docs/TECH_STACK.md](docs/TECH_STACK.md) | Stack choices and setup |
 
-## Deliverables checklist
+## No-paid-API compliance
 
-- [ ] Web app: live multi-document Q&A, side-by-side contradiction alerts, amendment tracking, safe abstention.
-- [ ] Exact citations with document name, page number, verbatim quote.
-- [ ] Faithfulness score shown in UI.
-- [ ] Verification pipeline explanation (this README section + `docs/VERIFICATION_PIPELINE.md`).
-- [ ] Models used documented in `docs/TECH_STACK.md`.
-- [ ] Demo dataset in `data/samples/`.
-
-## License
-
-Hackathon prototype — add license as needed.
+- No OpenAI/Anthropic/Gemini/Cohere/Voyage/paid SDKs.
+- No external AI endpoints in request path.
+- LLM, embeddings, reranker, NLI all run locally.
+- After model download, demo can run without internet.
