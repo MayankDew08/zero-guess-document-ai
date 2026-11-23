@@ -2,4 +2,4 @@
 @tailwind components;
 @tailwind utilities;
 
-body { @apply bg-slate-950 text-slate-100; }
+body { @apply bg-[#0A0E14] text-zinc-100; }
