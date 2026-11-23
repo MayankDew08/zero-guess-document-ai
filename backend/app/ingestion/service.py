@@ -118,3 +118,23 @@ def _doc_id_for(doc_name: str) -> str:
     if base in store.documents and store.documents[base].doc_name != doc_name:
         base = f"{base}_{stable_hash(doc_name, 6)}"
     return base
+
+
+def remove_document(doc_id: str) -> None:
+    """Delete a document and everything derived from it (chunks, sentences, edges, stored PDF copy)."""
+    doc = store.documents.get(doc_id)
+    _remove_doc(doc_id)
+    _rebuild_amendment_edges()
+    if doc is not None:
+        try:
+            stored = Path(doc.file_path)
+            if stored.parent.resolve() == (settings.data_path / "documents").resolve():
+                stored.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Could not delete stored copy of %s", doc_id)
+
+
+def clear_all_documents() -> None:
+    for doc_id in list(store.documents):
+        remove_document(doc_id)
+    store.reset()

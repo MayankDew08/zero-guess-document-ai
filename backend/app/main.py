@@ -11,7 +11,13 @@ from fastapi.responses import FileResponse, Response
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
 from app.core.store import store
-from app.ingestion.service import ingest_pdf_file, ingest_samples, rebuild_runtime_index
+from app.ingestion.service import (
+    clear_all_documents,
+    ingest_pdf_file,
+    ingest_samples,
+    rebuild_runtime_index,
+    remove_document,
+)
 from app.models.schemas import AskRequest, AskResponse, ReportRequest, ReportResponse
 from app.qa.service import ask_question
 
@@ -74,9 +80,52 @@ async def health() -> dict[str, Any]:
     }
 
 
+def _corpus_summary() -> dict[str, Any]:
+    from app.amendments.graph import superseded_doc_ids
+
+    return {
+        "documents": len(store.documents),
+        "pages": sum(d.num_pages for d in store.documents.values()),
+        "chunks": len(store.chunks),
+        "table_chunks": sum(1 for c in store.chunks.values() if c.chunk_type == "table"),
+        "sentences": len(store.sentence_index),
+        "amendment_edges": len(store.amendment_edges),
+        "superseded_docs": len(superseded_doc_ids(store.amendment_edges)),
+        "indexed": store.embeddings is not None,
+    }
+
+
+def _persist_after_change() -> None:
+    try:
+        rebuild_runtime_index()
+        store.save(settings.index_path)
+    except Exception as e:
+        logger.warning("Index rebuild/save failed: %s", e)
+
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str) -> dict[str, Any]:
+    """Remove one document: its chunks, sentences and amendment edges; rebuild and persist the index."""
+    doc = store.documents.get(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
+    remove_document(doc_id)
+    _persist_after_change()
+    return {"deleted": doc_id, "doc_name": doc.doc_name, "summary": _corpus_summary()}
+
+
+@app.delete("/api/documents")
+async def clear_corpus() -> dict[str, Any]:
+    """Clear the whole corpus (documents, chunks, edges, vectors) and persist the empty index."""
+    n = len(store.documents)
+    clear_all_documents()
+    _persist_after_change()
+    return {"deleted_documents": n, "summary": _corpus_summary()}
+
+
 @app.get("/api/documents")
 async def list_documents() -> dict[str, Any]:
-    return {"documents": [d.model_dump() for d in store.documents.values()]}
+    return {"documents": [d.model_dump() for d in store.documents.values()], "summary": _corpus_summary()}
 
 
 @app.api_route("/api/documents/{doc_id}/page/{page}/render", methods=["GET", "POST"])
@@ -89,6 +138,7 @@ async def render_document_page(doc_id: str, page: int, sentence_id: str | None =
     if page < 1 or page > doc.num_pages:
         raise HTTPException(status_code=400, detail=f"Page {page} out of range (1-{doc.num_pages})")
     rects: list[tuple[float, float, float, float]] = []
+    pipe_cells: list[str] | None = None
     if sentence_id:
         sent = store.get_sentence(sentence_id)
         if sent is None:
@@ -97,6 +147,7 @@ async def render_document_page(doc_id: str, page: int, sentence_id: str | None =
             raise HTTPException(status_code=400, detail="sentence_id does not belong to this document")
         page = int(sent["page"])
         b = sent.get("bbox")
+        pipe_cells = sent["text"].split(" | ") if " | " in sent["text"] else None
         if b:
             rects.append((b["x0"], b["y0"], b["x1"], b["y1"]))
     if bbox:
@@ -111,6 +162,13 @@ async def render_document_page(doc_id: str, page: int, sentence_id: str | None =
         pdf = pymupdf.open(doc.file_path)
         try:
             pg = pdf.load_page(page - 1)
+            if pipe_cells:  # table row: highlight the union of its cell texts, not a page-sized guess
+                from app.ingestion.parser import locate_cells_bbox
+
+                hint = rects[0] if rects else None
+                found = locate_cells_bbox(pg, pipe_cells, hint)
+                if found is not None:
+                    rects = [tuple(found)]
             for r in rects:
                 rect = pymupdf.Rect(r) + (-2, -1.5, 2, 1.5)
                 pg.draw_rect(rect, color=(0.96, 0.62, 0.04), fill=(1.0, 0.92, 0.23), fill_opacity=0.35,
@@ -273,29 +331,9 @@ async def download_report(report_id: str) -> FileResponse:
 
 
 def _report_html(resp: AskResponse) -> str:
-    claims_html = "".join(
-        f"<li><strong>{c.status}</strong>: {c.text}<br><small>{_claim_sources(c)}</small></li>" for c in resp.claims
-    )
-    blocked_html = "".join(f"<li>{c.text} — {c.reason}</li>" for c in resp.blocked_claims)
-    ctr_html = "".join(f"<li><strong>{c.subject}</strong> [{c.status}]: {c.explanation}</li>" for c in resp.contradictions)
-    am_html = "".join(
-        f"<li><strong>{c.subject}</strong>: {' -> '.join(c.doc_ids_ordered)} (active: {c.active_doc_name})</li>"
-        for c in resp.amendment_chains
-    )
-    return f"""<!doctype html><html><head><meta charset='utf-8'><title>Report {resp.request_id}</title>
-    <style>body{{font-family:Arial,sans-serif;margin:2rem;max-width:960px}} .muted{{color:#555}} code{{background:#f3f3f3;padding:2px 4px}}</style></head>
-    <body><h1>Zero-Guessing Report</h1>
-    <p class='muted'>Request: {resp.request_id}</p>
-    <p><strong>Question:</strong> {resp.question}</p>
-    <p><strong>Status:</strong> {resp.status}</p>
-    <p><strong>Answer:</strong> {resp.answer}</p>
-    <p><strong>Faithfulness:</strong> {resp.faithfulness_pct}% ({resp.verified_sentences_count}/{resp.total_shown_sentences})</p>
-    <p><strong>Blocked claims:</strong> {resp.blocked_claims_count}</p>
-    <h2>Claims</h2><ul>{claims_html or '<li>None</li>'}</ul>
-    <h2>Blocked Claims</h2><ul>{blocked_html or '<li>None</li>'}</ul>
-    <h2>Contradictions</h2><ul>{ctr_html or '<li>None</li>'}</ul>
-    <h2>Amendment Chains</h2><ul>{am_html or '<li>None</li>'}</ul>
-    </body></html>"""
+    from app.reporting import render_html
+
+    return render_html(resp)
 
 
 def _report_markdown(resp: AskResponse) -> str:

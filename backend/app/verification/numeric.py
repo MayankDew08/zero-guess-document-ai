@@ -3,9 +3,16 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-_NUM_RE = re.compile(r"(?<!\w)(?:₹|rs\.?|inr|\$|€|£)?\s*\d+(?:,\d{3})*(?:\.\d+)?\s*%?", re.IGNORECASE)
+# Numbers incl. Indian grouping (1,00,000) and optional lakh/crore multiplier; optional currency prefix.
+NUMBER_PATTERN = r"\d+(?:,\d{2,3})*(?:\.\d+)?"
+_MULT = {"lakh": 100_000, "lakhs": 100_000, "lac": 100_000, "lacs": 100_000,
+         "crore": 10_000_000, "crores": 10_000_000, "cr": 10_000_000}
+_NUM_RE = re.compile(
+    r"(?<!\w)(?P<cur>₹|rs\.?|inr|\$|€|£)?\s*(?P<num>" + NUMBER_PATTERN + r")\s*(?P<mult>lakhs?|lacs?|crores?|cr\b)?\s*(?P<pct>%)?",
+    re.IGNORECASE,
+)
 _DATE_RE = re.compile(
-    r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+    r"\b(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
     r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|"
     r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})\b",
     re.IGNORECASE,
@@ -15,11 +22,26 @@ _DATE_RE = re.compile(
 def extract_numbers(text: str) -> list[str]:
     vals = []
     for m in _NUM_RE.finditer(text or ""):
-        raw = m.group(0).strip()
-        norm = _normalize_number(raw)
+        norm = _normalize_parts(m.group("cur"), m.group("num"), m.group("mult"), m.group("pct"))
         if norm:
             vals.append(norm)
     return vals
+
+
+def parse_amount_value(num: str, mult: str | None = None) -> float:
+    """'1,00,000' -> 100000.0 ; ('5', 'lakh') -> 500000.0"""
+    v = float(num.replace(",", ""))
+    return v * _MULT[mult.lower()] if mult else v
+
+
+def _normalize_parts(cur: str | None, num: str, mult: str | None, pct: str | None) -> str | None:
+    cur_n = {"₹": "inr", "rs": "inr", "rs.": "inr", "inr": "inr", "$": "usd", "€": "eur", "£": "gbp"}.get((cur or "").lower(), "")
+    try:
+        value = parse_amount_value(num, mult)
+    except ValueError:
+        return None
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return f"{cur_n}{text}{'%' if pct else ''}"
 
 
 def extract_dates(text: str) -> list[str]:
@@ -31,26 +53,10 @@ def extract_dates(text: str) -> list[str]:
     return vals
 
 
-def _normalize_number(raw: str) -> str | None:
-    s = raw.lower().replace(",", "").replace(" ", "")
-    s = s.replace("rs.", "inr").replace("rs", "inr").replace("₹", "inr")
-    s = s.replace("$", "usd").replace("€", "eur").replace("£", "gbp")
-    # keep only meaningful numeric tokens (ignore bare years? no, keep them; but be careful)
-    m = re.fullmatch(r"(inr|usd|eur|gbp)?(\d+(?:\.\d+)?)(%)?", s)
-    if not m:
-        return None
-        # skip very short bare numbers that are likely not claim-critical? keep them.
-    cur, num, pct = m.group(1) or "", m.group(2), m.group(3) or ""
-    # normalize 2.0 -> 2
-    if "." in num:
-        num = num.rstrip("0").rstrip(".")
-    return f"{cur}{num}{pct}"
-
-
 def _normalize_date(raw: str) -> str | None:
     raw = raw.strip().replace(",", "")
     fmts = [
-        "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%m-%d-%Y",
+        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%m/%d/%Y", "%m-%d-%Y",
         "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y",
         "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y",
         "%b. %d %Y", "%d %b. %Y",

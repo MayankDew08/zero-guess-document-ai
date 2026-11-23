@@ -32,7 +32,9 @@ CASES = [
     ("calculation", "Calculate the late payment penalty on an overdue EMI of Rs 50,000 for 2 months under the latest active rule.",
      {"calc_result": "Rs 2,000"}),
     ("hindi", "नवीनतम सक्रिय नियम के अनुसार विलंब भुगतान शुल्क (late payment fee) क्या है?",
-     {"claim_has": "2%"}),
+     {"claim_has": "2%", "devanagari": True}),
+    ("partial_proof", "What is the late payment fee and what is the international SWIFT wire transfer fee under the latest active rule?",
+     {"claim_has": "2%", "missing_has": "swift"}),
     ("abstention", "What is the policy on cryptocurrency collateral for personal loans?",
      {"status": "abstained"}),
 ]
@@ -49,6 +51,10 @@ def check(d: dict, exp: dict) -> list[str]:
     for need in exp.get("claim_has_all", []):
         if need not in texts:
             fails.append(f"missing verified claim with {need}")
+    if "missing_has" in exp and exp["missing_has"] not in " ".join(d["missing_evidence"]).lower():
+        fails.append(f"missing_evidence does not flag {exp['missing_has']}")
+    if exp.get("devanagari") and not all(any("\u0900" <= ch <= "\u097f" for ch in c["text"]) for c in d["claims"]):
+        fails.append("claims are not in Hindi (Devanagari)")
     if "chain_active" in exp and not any(ch["active_doc_name"] == exp["chain_active"] for ch in d["amendment_chains"]):
         fails.append("amendment chain does not show v3 as active")
     if "contradiction_docs" in exp:

@@ -176,3 +176,11 @@ def test_malformed_source_id_is_format_repaired_but_never_invented():
         [DraftClaim(claim_id="c1", text="The late payment fee is 2% per month.", claim_type="numeric", source_ids=["doc1_p1_c1#0"])],
         store, FakeNLIProvider())
     assert len(shown) == 1 and shown[0].source_ids == ["doc1_p1_c1#s0"] and not blocked
+
+
+def test_llm_placeholder_claim_type_does_not_crash_parsing():
+    from app.qa.service import _parse_draft
+
+    d = _parse_draft({"claims": [{"claim_id": "c1", "text": "x is 2%", "claim_type": "numeric|rule", "source_ids": ["a#s0"]},
+                                 {"claim_id": "c2", "text": "y", "claim_type": "weird", "source_ids": []}]})
+    assert [c.claim_type for c in d.claims] == ["numeric", "factual"]

@@ -10,6 +10,14 @@ export interface Citation {
   support_status: string;
   nli_label?: string | null;
   nli_scores?: Record<string, number> | null;
+  verification_notes?: string | null;
+}
+
+export interface PipelineTrace {
+  gate1_retrieval: { hybrid_candidates: number; reranked_kept: number; max_rerank_score: number | null; threshold: number; passed: boolean };
+  gate2_citation_resolution: { drafted_claims: number; resolved_citations: number; rejected_invalid_ids: number };
+  gate3_nli_and_numeric: { nli_passed: number; nli_failed: number; numeric_passed: number; numeric_failed: number };
+  gate4_lineage_and_conflicts: { amendment_chains_found: number; superseded_docs_filtered: number; unresolved_contradictions: number; abstained: boolean };
 }
 
 export interface Claim {
@@ -20,6 +28,8 @@ export interface Claim {
   source_ids: string[];
   citations: Citation[];
   reason?: string | null;
+  text_en?: string | null;
+  language?: string;
 }
 
 export interface Contradiction {
@@ -72,8 +82,16 @@ export interface AskResponse {
   draft_support_pct?: number | null;
   missing_evidence: string[];
   calculation?: Calculation | null;
+  pipeline_trace?: PipelineTrace | null;
+  created_at?: string | null;
+  language?: string;
   confidence?: number | null;
   confidence_breakdown?: Record<string, number> | null;
   explanation?: any;
   debug?: any;
+}
+
+export interface CorpusSummary {
+  documents: number; pages: number; chunks: number; table_chunks: number; sentences: number;
+  amendment_edges: number; superseded_docs: number; indexed: boolean;
 }

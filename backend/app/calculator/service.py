@@ -12,10 +12,13 @@ from app.amendments.graph import active_chain_doc_ids
 from app.contradictions.detector import looks_like_heading, subjects_in, typed_values
 from app.core.store import AppStore
 from app.models.schemas import Calculation, Citation, Contradiction
+from app.verification.numeric import NUMBER_PATTERN, parse_amount_value
 
 getcontext().prec = 28
 
-_AMOUNT_RE = re.compile(r"(?:₹|\brs\.?|\binr|\brupees?)\s*([\d,]+(?:\.\d+)?)|([\d,]+(?:\.\d+)?)\s*(?:rupees|inr)\b", re.I)
+_AMOUNT_RE = re.compile(
+    r"(?:₹|\brs\.?|\binr|\brupees?)\s*(?P<a>" + NUMBER_PATTERN + r")\s*(?P<am>lakhs?|lacs?|crores?)?"
+    r"|(?P<b>" + NUMBER_PATTERN + r")\s*(?P<bm>lakhs?|lacs?|crores?)?\s*(?:rupees|inr)\b", re.I)
 _PERIOD_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(day|week|month|year)s?\b", re.I)
 _CALC_WORDS = re.compile(r"\b(calculate|compute|work\s+out|how\s+much|total)\b|गणना|कितना", re.I)
 _TOPIC_WORDS = re.compile(r"\b(fee|penalty|charge|interest|emi|instal?ment)\b|शुल्क|ब्याज", re.I)
@@ -38,7 +41,8 @@ def parse_amount(question: str) -> Decimal | None:
     m = _AMOUNT_RE.search(question)
     if not m:
         return None
-    return Decimal((m.group(1) or m.group(2)).replace(",", ""))
+    num, mult = (m.group("a"), m.group("am")) if m.group("a") else (m.group("b"), m.group("bm"))
+    return Decimal(str(parse_amount_value(num, mult)))
 
 
 def parse_months(question: str) -> Decimal | None:

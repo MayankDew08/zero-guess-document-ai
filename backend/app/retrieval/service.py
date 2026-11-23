@@ -121,6 +121,7 @@ def retrieve(
             )
         )
 
+    hybrid_candidates = len(retrieved)
     max_rerank = None
     reranker_used = False
     if settings.enable_reranker and apply_reranker and retrieved:
@@ -141,6 +142,7 @@ def retrieve(
         retrieved = retrieved[: settings.reranker_keep_top_n]
 
     max_rerank = max((r.rerank_score or 0.0) for r in retrieved) if retrieved else 0.0
+    kept = len(retrieved)
     if reranker_used:
         retrieved = _expand_multipage_sections(retrieved, app_store, allowed_ids=set(c.chunk_id for c in chunks))
     crag_passed = True
@@ -158,6 +160,8 @@ def retrieve(
         total_indexed_chunks=len(app_store.chunks),
         crag_passed=crag_passed,
         max_rerank_score=max_rerank,
+        hybrid_candidates=hybrid_candidates,
+        reranked_kept=kept,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app.amendments.graph import active_chain_doc_ids, build_amendment_chains, superseded_doc_ids
@@ -10,9 +11,19 @@ from app.contradictions.detector import detect_contradictions
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.store import AppStore, store
-from app.models.schemas import AskResponse, DraftAnswer, DraftClaim
+from app.models.schemas import (
+    AskResponse,
+    DraftAnswer,
+    DraftClaim,
+    Gate1Trace,
+    Gate2Trace,
+    Gate3Trace,
+    Gate4Trace,
+    PipelineTrace,
+)
 from app.qa.llm import LLMProvider, OllamaLLMProvider
-from app.qa.prompt import build_claim_prompt
+from app.qa.prompt import build_claim_prompt, is_hindi
+from app.qa.translate import render_claims_in_hindi
 from app.retrieval.embeddings import EmbeddingProvider
 from app.retrieval.reranker import RerankerProvider
 from app.retrieval.service import retrieve
@@ -22,7 +33,6 @@ from app.verification.pipeline import resolve_and_verify_claims
 
 logger = get_logger(__name__)
 
-_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
 ABSTAIN_EN = "I don't have proof in the provided documents to answer this question."
 ABSTAIN_HI = "मेरे पास दिए गए दस्तावेज़ों में इसका प्रमाण नहीं है। (I don't have proof in the provided documents to answer this question.)"
 
@@ -63,8 +73,33 @@ def _doc_status(app_store: AppStore) -> dict[str, str]:
     return status
 
 
-def _abstain(request_id, question, hindi, missing, debug_info, debug) -> AskResponse:
+def _build_trace(retrieval, draft, shown, blocked, edges, contradictions, chains_found, abstained) -> PipelineTrace:
+    claims = shown + blocked
+    reached = [c for c in claims if c.numeric_verification is not None]  # got through Gate 2 into Gate 3
+    invalid = [c for c in blocked if (c.reason or "").startswith(("unresolved_source_id", "no_source_ids"))]
+    nli_ok = sum(1 for c in reached if c.citations and c.citations[0].nli_label in {"entailment", "skipped"})
+    return PipelineTrace(
+        gate1_retrieval=Gate1Trace(
+            hybrid_candidates=retrieval.hybrid_candidates, reranked_kept=retrieval.reranked_kept,
+            max_rerank_score=retrieval.max_rerank_score, threshold=settings.rerank_abstain_threshold,
+            passed=bool(retrieval.crag_passed and retrieval.chunks)),
+        gate2_citation_resolution=Gate2Trace(
+            drafted_claims=len(draft.claims), resolved_citations=sum(1 for c in claims if c.citations),
+            rejected_invalid_ids=len(invalid)),
+        gate3_nli_and_numeric=Gate3Trace(
+            nli_passed=nli_ok, nli_failed=len(reached) - nli_ok,
+            numeric_passed=sum(1 for c in reached if c.numeric_verification.get("ok")),
+            numeric_failed=sum(1 for c in reached if not c.numeric_verification.get("ok"))),
+        gate4_lineage_and_conflicts=Gate4Trace(
+            amendment_chains_found=chains_found, superseded_docs_filtered=len(superseded_doc_ids(edges)),
+            unresolved_contradictions=len(contradictions), abstained=abstained),
+    )
+
+
+def _abstain(request_id, question, hindi, missing, debug_info, debug, trace=None) -> AskResponse:
     return AskResponse(
+        pipeline_trace=trace, created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        language="hi" if hindi else "en",
         request_id=request_id, question=question, status="abstained",
         answer=ABSTAIN_HI if hindi else ABSTAIN_EN,
         faithfulness_pct=None, missing_evidence=missing, confidence=0.0,
@@ -86,7 +121,7 @@ def ask_question(
 ) -> AskResponse:
     request_id = f"req_{uuid.uuid4().hex[:12]}"
     top_k = top_k or settings.hybrid_top_k
-    hindi = bool(_DEVANAGARI.search(question))
+    hindi = is_hindi(question)
     nli = _resolve_nli(nli_provider)
     llm = _resolve_llm(llm_provider)
 
@@ -114,24 +149,29 @@ def ask_question(
         reason = "No relevant evidence found." if not retrieval.chunks else (
             f"Evidence relevance ({retrieval.max_rerank_score or 0:.2f}) is below the CRAG threshold ({settings.rerank_abstain_threshold}).")
         if calculation is None:
-            return _abstain(request_id, question, hindi, [reason] + calc_missing, debug_info, debug)
+            trace = _build_trace(retrieval, DraftAnswer(), [], [], app_store.amendment_edges, [], len(chains), True)
+            return _abstain(request_id, question, hindi, [reason] + calc_missing, debug_info, debug, trace)
 
     shown: list = []
     blocked: list = []
     draft = DraftAnswer()
     if retrieval.chunks and retrieval.crag_passed:
-        prompt = build_claim_prompt(question, retrieval.chunks, _doc_status(app_store))
+        prompt = build_claim_prompt(question, retrieval.chunks, _doc_status(app_store), hindi=False)
         try:
             raw_draft = llm.generate_json(prompt)
         except Exception as e:  # LLM down/timeout -> abstain-with-reason, never a guess
             logger.warning("LLM generation failed: %s", e)
             raw_draft = {"claims": [], "missing_evidence": [f"LLM unavailable: {e}"]}
         draft = _parse_draft(raw_draft)
+        draft = _route_no_evidence_statements(draft)
         debug_info["llm_raw"] = raw_draft
         debug_info["draft_claims"] = [c.model_dump() for c in draft.claims]
         # Gate 2 + Gate 3
         shown, blocked = resolve_and_verify_claims(draft.claims, app_store, nli)
         shown = _dedupe_claims(shown)
+        if hindi:  # stage 2: verified Hindi rendering of the verified English claims
+            hindi_notes = render_claims_in_hindi(shown, llm, nli)
+            debug_info["hindi_rendering_notes"] = hindi_notes
         debug_info["verification"] = {"shown": [c.model_dump() for c in shown], "blocked": [c.model_dump() for c in blocked]}
 
     # Amendment-aware contradiction detection (conflicts explained by the amendment graph are excluded)
@@ -154,7 +194,8 @@ def ask_question(
 
     if not shown and calculation is None:
         missing_evidence.append("No claims could be verified against cited evidence.")
-        resp = _abstain(request_id, question, hindi, missing_evidence, debug_info, debug)
+        trace = _build_trace(retrieval, draft, shown, blocked, app_store.amendment_edges, contradictions, len(chains), True)
+        resp = _abstain(request_id, question, hindi, missing_evidence, debug_info, debug, trace)
         resp.blocked_claims = blocked
         resp.blocked_claims_count = len(blocked)
         resp.drafted_claims_count = fa["drafted_claims_count"]
@@ -171,7 +212,10 @@ def ask_question(
         status = "answered"
     answer = _compose_answer(shown, calculation, contradictions, chains, hindi)
     confidence, breakdown = _compute_confidence(retrieval, shown, blocked, contradictions, fa["faithfulness_pct"])
+    trace = _build_trace(retrieval, draft, shown, blocked, app_store.amendment_edges, contradictions, len(chains), False)
     resp = AskResponse(
+        pipeline_trace=trace, created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        language="hi" if hindi else "en",
         request_id=request_id, question=question, status=status, answer=answer,
         claims=shown, blocked_claims=blocked, contradictions=contradictions, amendment_chains=chains,
         faithfulness_pct=fa["faithfulness_pct"], verified_sentences_count=fa["verified_sentences_count"],
@@ -182,6 +226,24 @@ def ask_question(
     )
     _write_debug_report(resp, debug_info)
     return resp
+
+
+_NO_EVIDENCE_RE = re.compile(
+    r"\b(no\s+(?:evidence|proof|information|mention|data)|not\s+(?:found|provided|available|mentioned|specified|stated)|"
+    r"cannot\s+be\s+(?:determined|found)|unable\s+to|insufficient|missing)\b|नहीं|उपलब्ध नहीं",
+    re.IGNORECASE,
+)
+
+
+def _route_no_evidence_statements(draft: DraftAnswer) -> DraftAnswer:
+    """A source-less 'no evidence for X' statement is not a claim: it is a missing-evidence note."""
+    keep, extra = [], []
+    for c in draft.claims:
+        if not c.source_ids and _NO_EVIDENCE_RE.search(c.text):
+            extra.append(c.text)
+        else:
+            keep.append(c)
+    return DraftAnswer(claims=keep, missing_evidence=list(draft.missing_evidence) + extra)
 
 
 def _dedupe_claims(claims: list) -> list:
@@ -195,6 +257,17 @@ def _dedupe_claims(claims: list) -> list:
         seen.add(key)
         out.append(c)
     return out
+
+
+_CLAIM_TYPES = ("factual", "numeric", "date", "rule", "definition", "other")
+
+
+def _norm_claim_type(raw) -> str:
+    """LLMs sometimes echo the schema placeholder ('numeric|rule'): take the first valid type, else 'factual'."""
+    for tok in re.split(r"[|,/\s]+", str(raw or "").lower()):
+        if tok in _CLAIM_TYPES:
+            return tok
+    return "factual"
 
 
 def _parse_draft(raw: dict[str, Any]) -> DraftAnswer:
@@ -214,7 +287,7 @@ def _parse_draft(raw: dict[str, Any]) -> DraftAnswer:
             DraftClaim(
                 claim_id=str(c.get("claim_id") or f"c{i+1}"),
                 text=text,
-                claim_type=str(c.get("claim_type") or "factual"),
+                claim_type=_norm_claim_type(c.get("claim_type")),
                 source_ids=source_ids,
             )
         )

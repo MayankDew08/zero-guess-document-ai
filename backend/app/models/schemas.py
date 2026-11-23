@@ -64,6 +64,8 @@ class RetrievalResult(BaseModel):
     total_indexed_chunks: int = 0
     crag_passed: bool = True
     max_rerank_score: float | None = None
+    hybrid_candidates: int = 0
+    reranked_kept: int = 0
 
 
 class Citation(BaseModel):
@@ -103,6 +105,8 @@ class Claim(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     reason: str | None = None
     numeric_verification: dict[str, Any] | None = None
+    text_en: str | None = None  # verified English original when `text` is a verified Hindi rendering
+    language: str = "en"
 
 
 
@@ -129,6 +133,7 @@ class Contradiction(BaseModel):
     explanation: str
     values: list[ContradictionValue] = Field(default_factory=list)
     affected_claim_ids: list[str] = Field(default_factory=list)
+    nli_contradiction_score: float | None = None
 
 
 class AmendmentEdge(BaseModel):
@@ -173,6 +178,42 @@ class Calculation(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class Gate1Trace(BaseModel):
+    hybrid_candidates: int = 0
+    reranked_kept: int = 0
+    max_rerank_score: float | None = None
+    threshold: float = 0.0
+    passed: bool = False
+
+
+class Gate2Trace(BaseModel):
+    drafted_claims: int = 0
+    resolved_citations: int = 0
+    rejected_invalid_ids: int = 0
+
+
+class Gate3Trace(BaseModel):
+    nli_passed: int = 0
+    nli_failed: int = 0
+    numeric_passed: int = 0
+    numeric_failed: int = 0
+
+
+class Gate4Trace(BaseModel):
+    amendment_chains_found: int = 0
+    superseded_docs_filtered: int = 0
+    unresolved_contradictions: int = 0
+    abstained: bool = False
+
+
+class PipelineTrace(BaseModel):
+    """Lightweight per-request summary of the four deterministic gates."""
+    gate1_retrieval: Gate1Trace = Field(default_factory=Gate1Trace)
+    gate2_citation_resolution: Gate2Trace = Field(default_factory=Gate2Trace)
+    gate3_nli_and_numeric: Gate3Trace = Field(default_factory=Gate3Trace)
+    gate4_lineage_and_conflicts: Gate4Trace = Field(default_factory=Gate4Trace)
+
+
 class AskRequest(BaseModel):
     question: str
     doc_ids: list[str] | None = None
@@ -197,6 +238,9 @@ class AskResponse(BaseModel):
     draft_support_pct: float | None = None
     missing_evidence: list[str] = Field(default_factory=list)
     calculation: Calculation | None = None
+    pipeline_trace: PipelineTrace | None = None
+    created_at: str | None = None
+    language: str = "en"
     confidence: float | None = None
     confidence_breakdown: dict[str, float] | None = None
     debug: dict | None = None

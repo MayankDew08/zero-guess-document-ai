@@ -25,10 +25,11 @@ from app.models.schemas import (
     RetrievalResult,
 )
 from app.verification.nli import NLIProvider
+from app.verification.numeric import parse_amount_value
 
 _SECTION_NUM_RE = re.compile(r"^\s*\d+(\.\d+)*[\.\)]\s+")
 _PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|percent\b|per\s*cent\b)", re.IGNORECASE)
-_CURRENCY_RE = re.compile(r"(?:₹|\brs\.?|\binr|\busd|\$)\s*(\d[\d,]*(?:\.\d+)?)", re.IGNORECASE)
+_CURRENCY_RE = re.compile(r"(?:₹|\brs\.?|\binr|\busd|\$)\s*(\d[\d,]*(?:\.\d+)?)\s*(lakhs?|lacs?|crores?)?", re.IGNORECASE)
 _DURATION_RE = re.compile(r"(\d+)[\s-]*(day|week|month|year)s?\b", re.IGNORECASE)
 
 # canonical subject -> (regex, unit types that may be compared for it)
@@ -82,7 +83,7 @@ def typed_values(text: str) -> list[tuple[str, float, str]]:
     for m in _PERCENT_RE.finditer(body):
         out.append(("percent", float(m.group(1)), m.group(0).strip()))
     for m in _CURRENCY_RE.finditer(body):
-        out.append(("currency", float(m.group(1).replace(",", "")), m.group(0).strip()))
+        out.append(("currency", parse_amount_value(m.group(1), m.group(2)), m.group(0).strip()))
     for m in _DURATION_RE.finditer(body):
         out.append((f"duration:{m.group(2).lower()}", float(m.group(1)), m.group(0).strip()))
     return out
@@ -143,10 +144,12 @@ def find_conflicts(
     for (subj, _docs, _vtype), (_, a, b, ra, rb, _s) in best.items():
         explanation = (f"Unresolved conflict on '{subj}': {a.doc_name} says {ra} but {b.doc_name} says {rb}, "
                        "and neither document amends or supersedes the other.")
+        nli_score = None
         if nli_provider is not None:
             try:
                 sc = nli_provider.predict(premise=strip_section_number(a.text), hypothesis=strip_section_number(b.text))
-                explanation += f" (NLI contradiction p={sc.get('contradiction', 0.0):.2f})"
+                nli_score = float(sc.get("contradiction", 0.0))
+                explanation += f" (NLI contradiction p={nli_score:.2f})"
             except Exception:
                 pass
         out.append(Contradiction(
@@ -157,6 +160,7 @@ def find_conflicts(
             status="confirmed",
             explanation=explanation,
             values=[_to_value(a, ra), _to_value(b, rb)],
+            nli_contradiction_score=nli_score,
         ))
     return out
 

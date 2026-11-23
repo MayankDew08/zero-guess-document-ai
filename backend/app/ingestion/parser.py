@@ -42,7 +42,7 @@ def parse_pdf(path: str | Path) -> list[dict]:
 
             # --- tables -------------------------------------------------------------------
             for t, rect in zip(tables, table_rects, strict=True):
-                rows = _table_rows(t, words, mk)
+                rows = _table_rows(t, words, mk, page)
                 if not rows:
                     continue
                 items.append((rect.y0, {
@@ -127,7 +127,7 @@ def _is_heading(spans: list[dict], text: str, body_size: float) -> bool:
     return bool(all_bold and not text.endswith("."))
 
 
-def _table_rows(table, words: list, mk) -> list[dict]:
+def _table_rows(table, words: list, mk, page=None) -> list[dict]:
     """Rows as {text, bbox}; cell text is rebuilt from page words so spacing is faithful."""
     rows: list[dict] = []
     for row in table.rows:
@@ -142,7 +142,9 @@ def _table_rows(table, words: list, mk) -> list[dict]:
             if t:
                 cells_text.append(t)
         if cells_text:
-            rows.append({"text": " | ".join(cells_text), "bbox": mk(row.bbox)})
+            row_text = " | ".join(cells_text)
+            box = locate_cells_bbox(page, cells_text, row.bbox) if page is not None else None
+            rows.append({"text": row_text, "bbox": mk(box if box is not None else row.bbox)})
     return rows
 
 
@@ -175,6 +177,8 @@ def _sentence_bboxes(page, text: str, bwords: list, norm_words: list[str], block
                 hit = [pymupdf.Rect(w[:4]) for w, (a, b) in zip(bwords, offsets, strict=True) if a < end and b > start]
                 if hit:
                     box = _union(hit)
+        if box is None and " | " in sent:
+            box = locate_cells_bbox(page, sent.split(" | "), block_bbox)
         out[sent] = mk(box if box is not None else pymupdf.Rect(block_bbox))
     return out
 
@@ -184,3 +188,22 @@ def _union(rects) -> pymupdf.Rect:
     for x in rects[1:]:
         r |= pymupdf.Rect(x)
     return r
+
+
+def locate_cells_bbox(page, cells: list[str], hint=None, pad: float = 4.0):
+    """Tight bbox of a pipe-joined table row: search each cell's text on the page (restricted to the
+    stored row/block area when known) and take the union of the hits. None if nothing is found."""
+    clip = None
+    if hint is not None:
+        h = pymupdf.Rect(hint)
+        clip = pymupdf.Rect(h.x0 - pad, h.y0 - pad, h.x1 + pad, h.y1 + pad)
+    hits = []
+    for cell in cells:
+        cell = cell.strip()
+        if not cell:
+            continue
+        try:
+            hits += [r for r in (page.search_for(cell, clip=clip) if clip else page.search_for(cell)) if r.width > 0]
+        except Exception:
+            continue
+    return _union(hits) if hits else None

@@ -15,11 +15,18 @@ import networkx as nx
 
 from app.models.schemas import AmendmentChain, AmendmentEdge, Chunk
 
-_AMEND_RE = re.compile(r"\b(amends?|amended|supersedes?|superseded|replaces?|replaced|overrides?|overridden)\b", re.IGNORECASE)
+_AMEND_RE = re.compile(
+    r"\b(amends?|amended|supersedes?|superseded|replaces?|replaced|overrides?|overridden)\b"
+    r"|\bin\s+partial\s+modification\s+of\b|\bhereby\s+(?:modified|amended)\b|\bamended\s+to\s+read\b",
+    re.IGNORECASE,
+)
+# Indian regulatory references: "Circular No. DOR.STR.REC.45/2023-24", "Master Direction - Credit Cards"
+_CIRCULAR_RE = re.compile(r"circular\s+no\.?\s*:?\s*([A-Za-z0-9][A-Za-z0-9./_\-]*[A-Za-z0-9])", re.IGNORECASE)
+_MASTER_DIR_RE = re.compile(r"master\s+(?:direction|circular)\b[^,.;()\n]*?(?=\s+dated\b|\s+w\.e\.f|,|;|\(|\.\s|\.$|$)", re.IGNORECASE)
 _PASSIVE_RE = re.compile(r"\b(?:superseded|replaced|amended|overridden)\s+by\b", re.IGNORECASE)
 _EFFECTIVE_RE = re.compile(
-    r"(?:effective(?:\s+date)?|w\.e\.f\.?|with\s+effect\s+from)\s*[:\-]?\s*"
-    r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+    r"(?:effective(?:\s+date)?|w\.e\.f\.?|with\s+effect\s+from|dated)\s*[:\-]?\s*"
+    r"(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
     r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|"
     r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})",
     re.IGNORECASE,
@@ -37,13 +44,14 @@ def extract_amendment_edges(chunks: list[Chunk], doc_name_by_id: dict[str, str])
     edges: list[AmendmentEdge] = []
     seen: set[tuple[str, str, str]] = set()
     doc_dates = _doc_effective_dates(chunks)
+    doc_ids = _doc_identifiers(chunks)
     for chunk in chunks:
         if chunk.chunk_type == "table":
             continue
         for sent in chunk.sentences:
             if not _AMEND_RE.search(sent.text):
                 continue
-            targets = _referenced_docs(sent.text, chunk.doc_id, doc_name_by_id)
+            targets = _referenced_docs(sent.text, chunk.doc_id, doc_name_by_id, doc_ids)
             if not targets:
                 continue
             relation = _relation(sent.text)
@@ -86,16 +94,45 @@ def _family_version(name: str) -> tuple[str, int | None]:
     return _norm(stem[: m.start()]), int(m.group(1))
 
 
-def _referenced_docs(sentence: str, own_id: str, doc_name_by_id: dict[str, str]) -> list[str]:
+def _doc_identifiers(chunks: list[Chunk]) -> dict[str, set[str]]:
+    """Normalised circular numbers / Master Direction titles a document declares in its header
+    (first 4 sentences), so other documents can reference it by that identifier."""
+    out: dict[str, set[str]] = {}
+    seen: dict[str, int] = {}
+    for c in chunks:
+        for s in c.sentences:
+            n = seen.get(c.doc_id, 0)
+            if n >= 4 or c.page != 1:
+                continue
+            seen[c.doc_id] = n + 1
+            ids = out.setdefault(c.doc_id, set())
+            ids.update(_norm(m.group(1)) for m in _CIRCULAR_RE.finditer(s.text))
+            ids.update(_norm(m.group(0)) for m in _MASTER_DIR_RE.finditer(s.text))
+    return out
+
+
+def _referenced_docs(sentence: str, own_id: str, doc_name_by_id: dict[str, str],
+                     doc_ids: dict[str, set[str]] | None = None) -> list[str]:
     sent_n = _norm(sentence)
     found: list[str] = []
+    refs = {_norm(m.group(1)) for m in _CIRCULAR_RE.finditer(sentence)} | {_norm(m.group(0)) for m in _MASTER_DIR_RE.finditer(sentence)}
+    refs.discard("")
+    for doc_id, ids in (doc_ids or {}).items():
+        if doc_id != own_id and refs & ids:
+            found.append(doc_id)
+    for doc_id, name in doc_name_by_id.items():
+        if doc_id != own_id and doc_id not in found:
+            name_n = _norm(Path(name).stem)
+            if any(len(r) > 6 and r in name_n for r in refs):
+                found.append(doc_id)
     for doc_id, name in doc_name_by_id.items():
         if doc_id == own_id:
             continue
         stem_n = _norm(Path(name).stem)
         for m in re.finditer(re.escape(stem_n), sent_n):
             if not sent_n[m.end(): m.end() + 1].isdigit():
-                found.append(doc_id)
+                if doc_id not in found:
+                    found.append(doc_id)
                 break
     if found:
         return found
@@ -138,7 +175,7 @@ def _extract_date(text: str) -> str | None:
     if not m:
         return None
     raw = m.group(1).strip().replace(",", "")
-    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y",
+    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y",
                 "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"]:
         try:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
