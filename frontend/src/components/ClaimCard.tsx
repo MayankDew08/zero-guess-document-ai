@@ -36,10 +36,10 @@ export function ClaimCard({ claim, onOpenEvidence }: { claim: Claim; onOpenEvide
           ) : null}
           <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
             <Badge tone={st.tone}><span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />{st.label}</Badge>
-            {claim.citations.map(c => <CitationChip key={c.sentence_id} citation={c} onOpenEvidence={onOpenEvidence} compact />)}
+            {claim.citations.map((c, i) => <CitationChip key={`${c.sentence_id}-${i}`} citation={c} onOpenEvidence={onOpenEvidence} compact />)}
           </div>
-          {claim.citations.map(c => (
-            <div key={`${claim.claim_id}-${c.sentence_id}`} className="mt-2 rounded-r-md bg-[#10151D] px-3 py-2.5">
+          {claim.citations.map((c, i) => (
+            <div key={`${claim.claim_id}-${c.sentence_id}-${i}`} className="mt-2 rounded-r-md bg-[#10151D] px-3 py-2.5">
               <QuoteButton evidenceRef={toEvidenceRef(c)} onOpenEvidence={onOpenEvidence} />
               <div className="mt-2 flex flex-wrap items-center gap-2 pl-3">
                 <code className="text-[10px] text-zinc-600">{c.sentence_id}</code>

@@ -42,7 +42,8 @@ export function AnswerBlock({ response: r, onOpenEvidence, onClarifySubmit, onEx
   const blockedSub = drafted > 0 ? `draft support ${r.draft_support_pct == null ? 'N/A' : `${r.draft_support_pct}%`} · ${drafted} drafted` : 'no claims drafted'
   const conf = r.confidence
   const confTone: Tone = conf == null ? 'zinc' : conf >= 0.7 ? 'emerald' : conf >= 0.4 ? 'amber' : 'rose'
-  const cites = r.claims.flatMap(c => c.citations)
+  // One chip per distinct cited sentence (several claims often share a sentence; also keeps React keys unique).
+  const cites = [...new Map(r.claims.flatMap(c => c.citations).map(c => [c.sentence_id, c])).values()]
   // When the only thing missing is calculation input, the clarify form is the answer — not a refusal.
   const showAbstain = abstained && !r.clarification_needed
   return (
