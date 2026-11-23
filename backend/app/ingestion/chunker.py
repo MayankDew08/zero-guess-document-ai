@@ -33,6 +33,7 @@ def chunk_pages(
         buf: list[dict] = []
         buf_len = 0
         buf_section: str | None = None
+        buf_ctx: tuple[str, str | None] = ("", None)
 
         def flush() -> None:
             nonlocal buf, buf_len, idx
@@ -43,12 +44,13 @@ def chunk_pages(
             sentences = _build_sentences(chunk_id, page, buf)
             text = normalize_text(" ".join(u["text"] for u in buf))
             chunks.append(_make_chunk(chunk_id, doc_id, doc_name, page, buf_section, text, "paragraph",
-                                      _union_bbox([u.get("bbox") for u in buf]), sentences))
+                                      _union_bbox([u.get("bbox") for u in buf]), sentences, buf_ctx[0], buf_ctx[1]))
             buf, buf_len = [], 0
 
         for block in blocks:
             btype = block.get("block_type", "paragraph")
             section = block.get("section")
+            ctx = (block.get("section_context") or "", block.get("topic"))
             if btype == "heading":
                 flush()
                 continue
@@ -57,14 +59,14 @@ def chunk_pages(
                 for tbl_chunk_rows in _split_table_rows(block, target_chars):
                     idx += 1
                     chunk_id = f"{doc_id}_p{page}_c{idx}"
-                    chunks.append(_table_chunk(chunk_id, doc_id, doc_name, page, section, block, tbl_chunk_rows))
+                    chunks.append(_table_chunk(chunk_id, doc_id, doc_name, page, section, block, tbl_chunk_rows, ctx))
                 continue
             text = normalize_text(block.get("text", ""))
             if not text:
                 continue
-            if buf and section != buf_section:
+            if buf and (section, ctx[0]) != (buf_section, buf_ctx[0]):
                 flush()
-            buf_section = section
+            buf_section, buf_ctx = section, ctx
             for unit in _split_block(block, text, target_chars):
                 if buf and buf_len + 1 + len(unit["text"]) > target_chars:
                     flush()
@@ -112,7 +114,7 @@ def _split_table_rows(block: dict, target_chars: int) -> list[list[dict]]:
 
 
 def _table_chunk(chunk_id: str, doc_id: str, doc_name: str, page: int, section: str | None,
-                 block: dict, rows: list[dict]) -> Chunk:
+                 block: dict, rows: list[dict], ctx: tuple[str, str | None] = ("", None)) -> Chunk:
     header, data = rows[0], rows[1:] or rows
     sentences = [
         Sentence(sentence_id=f"{chunk_id}#s{i}", chunk_id=chunk_id, text=r["text"], page=page,
@@ -121,14 +123,16 @@ def _table_chunk(chunk_id: str, doc_id: str, doc_name: str, page: int, section: 
     ]
     text = "\n".join(r["text"] for r in rows)
     chunk = _make_chunk(chunk_id, doc_id, doc_name, page, section, text, "table",
-                        _union_bbox([r.get("bbox") for r in rows]), sentences)
+                        _union_bbox([r.get("bbox") for r in rows]), sentences, ctx[0], ctx[1])
     chunk.metadata["table_header"] = header["text"]
     return chunk
 
 
-def _make_chunk(chunk_id, doc_id, doc_name, page, section, text, chunk_type, bbox, sentences) -> Chunk:
+def _make_chunk(chunk_id, doc_id, doc_name, page, section, text, chunk_type, bbox, sentences,
+                section_context: str = "", page_topic: str | None = None) -> Chunk:
     return Chunk(
         chunk_id=chunk_id, doc_id=doc_id, doc_name=doc_name, page=page, section=section,
+        section_context=section_context, page_topic=page_topic,
         text=text, normalized_text=text.casefold(), chunk_type=chunk_type, bbox=bbox,
         sentences=sentences, char_start=0, char_end=len(text), metadata={"source": "pdf"},
     )

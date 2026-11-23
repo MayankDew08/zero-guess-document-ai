@@ -79,12 +79,13 @@ def render_claims_in_hindi(claims: list[Claim], llm: LLMProvider, nli: NLIProvid
     for c in claims:
         hindi = by_id.get(c.claim_id, "")
         quote = " ".join(cit.quote for cit in c.citations)
-        ok_num, why = check_numeric_date_match(hindi, quote) if hindi else (False, "empty")
+        ctx = " ".join(cit.section_context or "" for cit in c.citations)
+        ok_num, why = check_numeric_date_match(hindi, quote, ctx) if hindi else (False, "empty")
         eng_nums = set(re.findall(r"\d[\d,]*(?:\.\d+)?%?", c.text))
         nums_kept = eng_nums <= set(re.findall(r"\d[\d,]*(?:\.\d+)?%?", hindi))
         entail, score = True, None
         if nli is not None and hindi:
-            sc = nli.predict(premise=quote, hypothesis=hindi)
+            sc = nli.predict(premise=f"{ctx}: {quote}" if ctx.strip() else quote, hypothesis=hindi)
             score = sc.get("entailment", 0.0)
             entail = max(sc, key=sc.get) == "entailment" and score >= settings.nli_entailment_threshold
         clean = bool(hindi) and _looks_like_hindi(hindi) and not _stray_latin(hindi)

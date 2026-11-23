@@ -89,6 +89,7 @@ def resolve_and_verify_claims(
                     doc_name=s["doc_name"],
                     page=s["page"],
                     quote=s["text"],
+                    section_context=s.get("section_context") or None,
                     bbox=bbox,
                     verification_status="verified",
                     support_status="unchecked",
@@ -99,22 +100,34 @@ def resolve_and_verify_claims(
 
         claim.citations = citations
         merged_quote = " ".join(c.quote for c in citations).strip()
+        contexts = list(dict.fromkeys(c.section_context for c in citations if c.section_context))
+        context = " | ".join(contexts)
+        # NLI sees "topic > section: quote" so a bullet is judged within the section it belongs to;
+        # citations/reports still show only the pure verbatim quote.
+        premise = f"{context}: {merged_quote}" if context else merged_quote
 
         # Gate 3a: NLI (true 3-class entailment/neutral/contradiction)
         if nli_provider is None:
             nli_scores, nli_label = {}, "skipped"
             entail_ok, contradicted = True, False
         else:
-            nli_scores = nli_provider.predict(premise=merged_quote, hypothesis=claim.text)
+            def _entails(sc: dict) -> bool:
+                return bool(sc) and max(sc, key=sc.get) == "entailment" and sc.get("entailment", 0.0) >= settings.nli_entailment_threshold
+
+            # Contextual premise first (helps bullets/sub-clauses); the plain quote is the fallback so a long
+            # heading prefix can never turn a clean sentence into a false "contradiction".
+            nli_scores = nli_provider.predict(premise=premise, hypothesis=claim.text)
+            if context and not _entails(nli_scores):
+                nli_scores = nli_provider.predict(premise=merged_quote, hypothesis=claim.text)  # legacy plain-quote verdict
             nli_label = max(nli_scores, key=nli_scores.get) if nli_scores else "neutral"
-            entail_ok = nli_label == "entailment" and nli_scores.get("entailment", 0.0) >= settings.nli_entailment_threshold
+            entail_ok = _entails(nli_scores)
             contradicted = nli_label == "contradiction" and nli_scores.get("contradiction", 0.0) >= settings.nli_contradiction_threshold
         for c in claim.citations:
             c.nli_label = nli_label
             c.nli_scores = nli_scores
 
         # Gate 3b: deterministic numeric/date check
-        num_ok, num_reason = check_numeric_date_match(claim.text, merged_quote)
+        num_ok, num_reason = check_numeric_date_match(claim.text, merged_quote, context)
         claim.numeric_verification = {
             "ok": bool(num_ok),
             "reason": num_reason,

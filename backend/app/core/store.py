@@ -41,6 +41,7 @@ class AppStore:
                     "doc_id": chunk.doc_id,
                     "doc_name": chunk.doc_name,
                     "page": chunk.page,
+                    "section_context": chunk.section_context or chunk.section or "",
                     "text": s.text,
                     "bbox": s.bbox.model_dump() if s.bbox else None,
                 }
@@ -95,6 +96,7 @@ class AppStore:
                     "doc_id": chunk.doc_id,
                     "doc_name": chunk.doc_name,
                     "page": chunk.page,
+                    "section_context": chunk.section_context or chunk.section or "",
                     "text": s.text,
                     "bbox": s.bbox.model_dump() if s.bbox else None,
                 }

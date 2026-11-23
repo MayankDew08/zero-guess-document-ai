@@ -30,12 +30,19 @@ class Chunk(BaseModel):
     doc_name: str
     page: int
     section: str | None = None
+    section_context: str = ""  # "topic > sub-heading"; never part of text/quotes
+    page_topic: str | None = None
     text: str
     normalized_text: str = ""
     chunk_type: Literal["paragraph", "table", "heading", "list", "other"] = "paragraph"
     bbox: BBox | None = None
     sentences: list[Sentence] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+
+    def retrieval_text(self) -> str:
+        """Context-enriched text for BM25 / embeddings / reranking. Displayed quotes use `text` only."""
+        ctx = self.section_context or self.section or ""
+        return f"[{self.doc_name} | p.{self.page} | {ctx}] {self.text}"
 
 
 class Document(BaseModel):
@@ -75,6 +82,7 @@ class Citation(BaseModel):
     doc_name: str
     page: int
     quote: str
+    section_context: str | None = None
     bbox: BBox | None = None
     verification_status: Literal["verified", "unverified", "failed"] = "unverified"
     support_status: Literal["supported", "contradicted", "not_enough_info", "unchecked"] = "unchecked"

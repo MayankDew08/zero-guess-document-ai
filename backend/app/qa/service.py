@@ -21,6 +21,7 @@ from app.models.schemas import (
     Gate4Trace,
     PipelineTrace,
 )
+from app.qa.decompose import split_question_parts
 from app.qa.llm import LLMProvider, OllamaLLMProvider
 from app.qa.prompt import build_claim_prompt, is_hindi
 from app.qa.translate import render_claims_in_hindi
@@ -126,9 +127,12 @@ def ask_question(
     llm = _resolve_llm(llm_provider)
 
     # Gate 1: retrieve + rerank + CRAG pre-generation abstention
-    retrieval = retrieve(query=question, top_k=top_k, doc_ids=doc_ids, app_store=app_store,
-                         embedding_provider=embedding_provider, reranker_provider=reranker_provider,
-                         apply_reranker=True, apply_crag_gate=True)
+    # Compound questions ("... and what is ...") are split; every part gets its own retrieval, CRAG gate and draft.
+    parts = split_question_parts(question)
+    part_results = [retrieve(query=p, top_k=top_k, doc_ids=doc_ids, app_store=app_store,
+                             embedding_provider=embedding_provider, reranker_provider=reranker_provider,
+                             apply_reranker=True, apply_crag_gate=True) for p in parts]
+    retrieval = _merge_retrievals(part_results)
     debug_info: dict[str, Any] = {"retrieval": {
         "total_indexed_chunks": retrieval.total_indexed_chunks, "crag_passed": retrieval.crag_passed,
         "max_rerank_score": retrieval.max_rerank_score,
@@ -156,14 +160,32 @@ def ask_question(
     blocked: list = []
     draft = DraftAnswer()
     if retrieval.chunks and retrieval.crag_passed:
-        prompt = build_claim_prompt(question, retrieval.chunks, _doc_status(app_store), hindi=False)
-        try:
-            raw_draft = llm.generate_json(prompt)
-        except Exception as e:  # LLM down/timeout -> abstain-with-reason, never a guess
-            logger.warning("LLM generation failed: %s", e)
-            raw_draft = {"claims": [], "missing_evidence": [f"LLM unavailable: {e}"]}
-        draft = _parse_draft(raw_draft)
-        draft = _route_no_evidence_statements(draft)
+        claims_all: list[DraftClaim] = []
+        missing_all: list[str] = []
+        raws: list[dict] = []
+        for part, rv in zip(parts, part_results, strict=True):
+            if not rv.chunks or not rv.crag_passed:  # this part has no proof at all: no LLM call, no guess
+                missing_all.append(f"No proof found in the documents for: {part}")
+                continue
+            prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False)
+            try:
+                raw_part = llm.generate_json(prompt)
+            except Exception as e:  # LLM down/timeout -> abstain-with-reason, never a guess
+                logger.warning("LLM generation failed: %s", e)
+                raw_part = {"claims": [], "missing_evidence": [f"LLM unavailable: {e}"]}
+            raws.append(raw_part)
+            d_part = _route_no_evidence_statements(_parse_draft(raw_part))
+            snapped = snap_citations(d_part.claims, [c.chunk for c in rv.chunks])
+            if snapped:
+                debug_info.setdefault("snapped_citations", []).extend(snapped)
+            claims_all.extend(d_part.claims)
+            missing_all.extend(d_part.missing_evidence)
+        if len(parts) > 1:
+            for i, c in enumerate(claims_all, 1):
+                c.claim_id = f"c{i}"
+            debug_info["question_parts"] = parts
+        draft = DraftAnswer(claims=claims_all, missing_evidence=missing_all)
+        raw_draft = raws[0] if len(raws) == 1 else raws
         debug_info["llm_raw"] = raw_draft
         debug_info["draft_claims"] = [c.model_dump() for c in draft.claims]
         # Gate 2 + Gate 3
@@ -199,6 +221,7 @@ def ask_question(
         resp.blocked_claims = blocked
         resp.blocked_claims_count = len(blocked)
         resp.drafted_claims_count = fa["drafted_claims_count"]
+        resp.draft_support_pct = fa["draft_support_pct"]
         _write_debug_report(resp, debug_info)
         return resp
 
@@ -229,8 +252,11 @@ def ask_question(
 
 
 _NO_EVIDENCE_RE = re.compile(
-    r"\b(no\s+(?:evidence|proof|information|mention|data)|not\s+(?:found|provided|available|mentioned|specified|stated)|"
-    r"cannot\s+be\s+(?:determined|found)|unable\s+to|insufficient|missing)\b|नहीं|उपलब्ध नहीं",
+    r"\b(no\s+(?:specific\b[^.]{0,80}?)?(?:evidence|proof|information|mention|data|details?)|"
+    r"(?:is|are|was|were|has\s+been|have\s+been)?\s*not\s+(?:found|provided|available|mentioned|specified|stated|given|listed|disclosed)|"
+    r"does(?:\s+not|n't)\s+(?:state|specify|mention|provide|contain|say|list|include)|"
+    r"no\s+specific[^.]{0,80}?(?:mention|provid|specif|stat|given|list)|"
+    r"cannot\s+be\s+(?:determined|found)|unable\s+to|insufficient|missing|there\s+is\s+no|there\s+are\s+no)\b|नहीं|उपलब्ध नहीं",
     re.IGNORECASE,
 )
 
@@ -244,6 +270,54 @@ def _route_no_evidence_statements(draft: DraftAnswer) -> DraftAnswer:
         else:
             keep.append(c)
     return DraftAnswer(claims=keep, missing_evidence=list(draft.missing_evidence) + extra)
+
+
+_TOKEN = re.compile(r"[a-z0-9%₹]+")
+
+
+def _toks(text: str) -> set[str]:
+    return set(_TOKEN.findall((text or "").lower()))
+
+
+def snap_citations(claims: list[DraftClaim], chunks: list) -> list[dict]:
+    """Deterministic repair of an off-by-one / wrong sentence_id.
+
+    If a claim restates (>=80% of its words) some retrieved sentence but barely overlaps the sentence it cites,
+    cite the sentence it actually restates. Only sentences from the retrieved evidence are eligible, and the
+    claim still has to pass NLI + numeric checks against the new quote."""
+    sents = {s.sentence_id: _toks(s.text) for ch in chunks for s in ch.sentences}
+    out: list[dict] = []
+    for c in claims:
+        ct = _toks(c.text)
+        if not c.source_ids or not ct:
+            continue
+        sim = lambda sid: len(ct & sents.get(sid, set())) / len(ct)  # noqa: E731  (containment of claim in sentence)
+        cur = max((sim(sid) for sid in c.source_ids), default=0.0)
+        best_sid = max(sents, key=sim, default=None)
+        if best_sid and best_sid not in c.source_ids and sim(best_sid) >= 0.8 and sim(best_sid) > cur + 0.2:
+            out.append({"claim_id": c.claim_id, "from": list(c.source_ids), "to": best_sid, "similarity": round(sim(best_sid), 2)})
+            c.source_ids = [best_sid]
+    return out
+
+
+def _merge_retrievals(results: list):
+    """One RetrievalResult for tracing/contradictions: union of chunks; passes if any part passed."""
+    if len(results) == 1:
+        return results[0]
+    seen: set[str] = set()
+    chunks = []
+    for r in results:
+        for rc in r.chunks:
+            if rc.chunk.chunk_id not in seen:
+                seen.add(rc.chunk.chunk_id)
+                chunks.append(rc)
+    scores = [r.max_rerank_score for r in results if r.max_rerank_score is not None]
+    first = results[0]
+    return first.model_copy(update={
+        "chunks": chunks, "crag_passed": any(r.crag_passed and r.chunks for r in results),
+        "max_rerank_score": max(scores) if scores else None,
+        "hybrid_candidates": sum(r.hybrid_candidates for r in results),
+        "reranked_kept": sum(r.reranked_kept for r in results)})
 
 
 def _dedupe_claims(claims: list) -> list:

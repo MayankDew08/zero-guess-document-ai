@@ -356,7 +356,7 @@ export default function App() {
             <div className={`space-y-4 ${asking ? 'opacity-40' : ''}`}>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <Metric label="Faithfulness" value={faith == null ? 'N/A' : `${faith}%`} tone={faith === 100 ? 'text-emerald-300' : 'text-amber-300'} sub={`${answer.verified_sentences_count}/${answer.total_shown_sentences} shown claims verified`} />
-                <Metric label="Blocked claims" value={String(answer.blocked_claims_count)} tone={answer.blocked_claims_count ? 'text-amber-300' : 'text-slate-100'} sub={answer.draft_support_pct != null ? `draft support ${answer.draft_support_pct}%` : 'nothing drafted'} />
+                <Metric label="Blocked claims" value={String(answer.blocked_claims_count)} tone={answer.blocked_claims_count ? 'text-amber-300' : 'text-slate-100'} sub={(answer.drafted_claims_count ?? 0) > 0 ? `draft support ${answer.draft_support_pct ?? 0}% (${answer.drafted_claims_count} drafted)` : 'no claims drafted'} />
                 <Metric label="Confidence" value={answer.confidence == null ? 'N/A' : `${(answer.confidence * 100).toFixed(0)}%`} sub={answer.confidence_breakdown ? `ret ${answer.confidence_breakdown.retrieval?.toFixed(2)} · ver ${answer.confidence_breakdown.verification?.toFixed(2)} · pen ${answer.confidence_breakdown.contradiction_penalty?.toFixed(2)}` : undefined} />
                 <Metric label="Status" value={answer.status.replace('_', ' ')} tone={answer.status === 'answered' ? 'text-emerald-300' : answer.status === 'contradicted' ? 'text-red-300' : 'text-amber-300'} />
               </div>

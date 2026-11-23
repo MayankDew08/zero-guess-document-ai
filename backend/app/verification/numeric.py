@@ -19,9 +19,46 @@ _DATE_RE = re.compile(
 )
 
 
+# Identifier codes are labels, not quantities: AIML-02, CS-01, W3-01, v3, RBI/2023-24/28, Section 4.2, Page 6, p.5
+_KEYWORD_REF_RE = re.compile(
+    r"\b(?:section|sec|clause|article|annexure|annex|appendix|schedule|chapter|para|paragraph|page|pg|pp?|rule|regulation|"
+    r"item|step|point|figure|fig|table|no|ref|serial)\b\.?\s*\.?\s*\d+(?:[.\-/]\d+)*(?:\([a-z0-9]+\))?",
+    re.IGNORECASE,
+)
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9/_.\-]*[A-Za-z0-9]|[A-Za-z0-9]")
+_QUANTITY_TOKEN_RE = re.compile(
+    r"^(?:(?:₹|rs\.?|inr|usd|eur|gbp)\d[\d,.]*|\d[\d,.]*-?(?:days?|weeks?|months?|years?|lakhs?|lacs?|crores?|cr|%|st|nd|rd|th))$",
+    re.IGNORECASE,
+)
+# strict, uppercase-led codes that must be attributed to the right context (AIML-02, CS-01, RBI/2023-24/28)
+_STRICT_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,}[-/][A-Z0-9][A-Z0-9/\-.]*\d[A-Z0-9/\-.]*\b|\b[A-Z]{2,}[-/]\d[\dA-Z/\-.]*\b")
+
+
+def mask_identifiers(text: str) -> str:
+    """Blank out identifier codes so their digits are not mistaken for quantities."""
+    text = text or ""
+    chars = list(text)
+
+    def blank(a: int, b: int) -> None:
+        for i in range(a, b):
+            chars[i] = " "
+
+    for m in _KEYWORD_REF_RE.finditer(text):
+        blank(*m.span())
+    for m in _TOKEN_RE.finditer(text):
+        tok = m.group(0).rstrip(".")
+        if any(c.isalpha() for c in tok) and any(c.isdigit() for c in tok) and not _QUANTITY_TOKEN_RE.match(tok):
+            blank(*m.span())
+    return "".join(chars)
+
+
+def extract_identifier_codes(text: str) -> set[str]:
+    return {re.sub(r"[\s.]+$", "", m.group(0)).upper() for m in _STRICT_CODE_RE.finditer(text or "")}
+
+
 def extract_numbers(text: str) -> list[str]:
     vals = []
-    for m in _NUM_RE.finditer(text or ""):
+    for m in _NUM_RE.finditer(mask_identifiers(text)):
         norm = _normalize_parts(m.group("cur"), m.group("num"), m.group("mult"), m.group("pct"))
         if norm:
             vals.append(norm)
@@ -46,7 +83,7 @@ def _normalize_parts(cur: str | None, num: str, mult: str | None, pct: str | Non
 
 def extract_dates(text: str) -> list[str]:
     vals = []
-    for m in _DATE_RE.finditer(text or ""):
+    for m in _DATE_RE.finditer(mask_identifiers(text)):
         norm = _normalize_date(m.group(0))
         if norm:
             vals.append(norm)
@@ -71,22 +108,26 @@ def _normalize_date(raw: str) -> str | None:
     return raw.lower()
 
 
-def check_numeric_date_match(claim: str, quote: str) -> tuple[bool, str | None]:
-    """Return (ok, reason_if_failed). Every numeric/date token in claim must be matched in quote."""
+def check_numeric_date_match(claim: str, quote: str, context: str = "") -> tuple[bool, str | None]:
+    """Return (ok, reason_if_failed). Every quantity/date in the claim must appear in the quote; identifier codes
+    (AIML-02, CS-01, ...) are not quantities but must be attributable to quote + section context."""
     claim_nums = extract_numbers(claim)
     quote_nums = set(extract_numbers(quote))
     claim_dates = extract_dates(claim)
     quote_dates = set(extract_dates(quote))
 
+    missing_codes = sorted(extract_identifier_codes(claim) - extract_identifier_codes(f"{context} {quote}"))
     missing_nums = [n for n in claim_nums if n not in quote_nums]
     missing_dates = [d for d in claim_dates if d not in quote_dates]
 
     # Allow some tolerance: if claim has no numeric/date tokens, pass this check.
-    if not claim_nums and not claim_dates:
+    if not claim_nums and not claim_dates and not missing_codes:
         return True, None
 
-    if missing_nums or missing_dates:
+    if missing_nums or missing_dates or missing_codes:
         parts = []
+        if missing_codes:
+            parts.append(f"identifier not in quote/section context: {missing_codes}")
         if missing_nums:
             parts.append(f"numbers not in quote: {missing_nums}")
         if missing_dates:

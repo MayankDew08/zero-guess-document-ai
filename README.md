@@ -72,7 +72,7 @@ Settings live in `backend/.env` (`EMBEDDING_DEVICE=cpu`, `RERANKER_DEVICE=cpu`, 
 
 ¹ `contradicted` = the answer is verified (2%/month from the active v3) **and** an unresolved conflict exists (`Acme_Operations_Notice.pdf` says 5% / 5-day grace). ² The LLM drafted an extra claim that failed NLI/numeric verification and was blocked — never shown.
 
-`scripts/evaluate.py` (in-process, 7 cases with expected-outcome checks): **7/7 pass**, 16 drafted claims → 15 verified & shown, 1 blocked, **faithfulness of shown claims 100%**, draft support 93.8%, 0 false v1/v2-vs-v3 conflicts. Also verified live: table-row citation renders a highlighted PNG, HTML audit report contains every verbatim quote (claims, both sides of each contradiction, every amendment clause), `DELETE` single/all documents. Unit tests: **45 passing** (`pytest`).
+`scripts/evaluate.py` (in-process, 7 cases with expected-outcome checks): **7/7 pass**, 16 drafted claims → 15 verified & shown, 1 blocked, **faithfulness of shown claims 100%**, draft support 93.8%, 0 false v1/v2-vs-v3 conflicts. Also verified live: table-row citation renders a highlighted PNG, HTML audit report contains every verbatim quote (claims, both sides of each contradiction, every amendment clause), `DELETE` single/all documents. Unit tests: **57 passing** (`pytest`).
 
 ## 60-second setup & demo
 

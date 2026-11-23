@@ -18,7 +18,7 @@ def build_claim_prompt(question: str, chunks: list[RetrievedChunk], doc_status: 
     blocks = []
     for r in chunks:
         c = r.chunk
-        head = f"### {c.doc_name} | page {c.page} | section: {c.section or '-'} | document_status: {doc_status.get(c.doc_id, 'STANDALONE')}"
+        head = f"### {c.doc_name} | page {c.page} | [Context: {c.section_context or c.section or '-'}] | document_status: {doc_status.get(c.doc_id, 'STANDALONE')}"
         if c.chunk_type == "table":
             head += f" | table columns: {c.metadata.get('table_header')}"
         lines = [f"[{s.sentence_id}] {s.text}" for s in c.sentences]
@@ -37,8 +37,11 @@ RULES:
 - Output VALID JSON only. No markdown, no commentary.
 {language_rule}- Create atomic factual claims: 1 claim = 1 sentence, restating exactly what ONE cited sentence says.
 - A claim must say only what its cited sentence says: do not add qualifiers, dates, document names or reasoning that are not in that sentence.
+- Reuse the cited sentence's own words, including its nouns: do NOT swap in synonyms from the question (if the sentence says 'Applicants', write 'Applicants', not 'Borrowers').
 - Keep every number, percentage, currency amount, duration and date EXACTLY as written in the cited sentence.
 - Each claim MUST cite 1-2 source_ids copied character-for-character from the square brackets in front of an evidence sentence (e.g. [doc_p1_c1#s0] -> "doc_p1_c1#s0"). Cite the sentence you restate, nothing else. Never invent ids or quotes.
+- Each evidence group header shows [Context: ...]: the document topic and section the sentences belong to. Use sentences only from the group whose context matches what the question asks about (e.g. a question about AIML-02 must not use sentences under an AIML-01 context). Identical section names under different topics are different sections.
+- If the question names a section (e.g. 'bonus features', 'deliverables', 'must-have features'), answer ONLY from sentences whose [Context] ends with that section name and include every sentence of that section that is relevant.
 - Table rows list their cells separated by " | " in the order of the table columns: name the fee type and its amount in the claim.
 - document_status tells you which rules are live: ACTIVE = latest in an amendment chain, SUPERSEDED = replaced by a newer document (historical only), STANDALONE = no amendment link.
 - For "latest / current / active" questions you MUST include a claim from the ACTIVE document that answers the question; never present a SUPERSEDED document's value as the current rule.

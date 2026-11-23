@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import statistics
+from collections import Counter
 from pathlib import Path
 
 import pymupdf
@@ -23,7 +24,6 @@ def parse_pdf(path: str | Path) -> list[dict]:
     pages: list[dict] = []
     try:
         body_size = _body_font_size(doc)
-        current_section: str | None = None
         for i, page in enumerate(doc):
             width, height = float(page.rect.width), float(page.rect.height)
 
@@ -80,23 +80,58 @@ def parse_pdf(path: str | Path) -> list[dict]:
                     "text": text,
                     "bbox": mk(blk["bbox"]),
                 }
+                if is_heading:
+                    block["font_size"] = max(float(sp.get("size", 0)) for sp in spans)
                 if not is_heading:
                     block["sent_bboxes"] = _sentence_bboxes(page, text, bwords, norm_words, blk["bbox"], mk)
                 items.append((float(blk["bbox"][1]), block))
 
             items.sort(key=lambda it: it[0])
-            blocks: list[dict] = []
-            for _, block in items:
-                if block["block_type"] == "heading":
-                    current_section = block["text"]
-                block["section"] = current_section
-                blocks.append(block)
+            blocks: list[dict] = [block for _, block in items]
 
             page_text = normalize_text("\n".join(b["text"] for b in blocks))
             pages.append({"page": i + 1, "text": page_text, "blocks": blocks, "width": width, "height": height})
     finally:
         doc.close()
+    _assign_context(pages)
     return pages
+
+
+def _assign_context(pages: list[dict]) -> None:
+    """Hierarchical context carried across pages.
+
+    * Headings of the doc's most common heading size are *sub-headings* ("Bonus features",
+      "2. Late Payment Fee"); every other heading size is a *topic* heading (document/page title,
+      kicker such as "AIML · AIML-02 · OPTION B"). Consecutive topic headings form one topic.
+    * A topic stays in force (also onto following pages) until a new topic heading starts.
+    * block["section"]  = current sub-heading, else the topic (legacy behaviour)
+    * block["topic"]    = current topic
+    * block["section_context"] = "topic > sub-heading"
+    Block texts are never modified.
+    """
+    sizes = [round(b["font_size"] * 2) / 2 for pg in pages for b in pg["blocks"] if b.get("block_type") == "heading" and "font_size" in b]
+    mode = Counter(sizes).most_common(1)[0][0] if sizes else None
+    parts: list[str] = []
+    topic: str | None = None
+    sub: str | None = None
+    prev_topic = False
+    for pg in pages:
+        for b in pg["blocks"]:
+            if b.get("block_type") == "heading":
+                size = round(b.get("font_size", 0) * 2) / 2
+                if mode is not None and abs(size - mode) <= 0.5:
+                    sub, prev_topic = b["text"], False
+                else:
+                    if prev_topic:
+                        parts.append(b["text"])
+                    else:
+                        parts, sub = [b["text"]], None
+                    topic, prev_topic = " — ".join(parts), True
+            else:
+                prev_topic = False
+            b["topic"] = topic
+            b["section"] = sub or topic
+            b["section_context"] = " > ".join(x for x in (topic, sub) if x)
 
 
 # ---------------------------------------------------------------------------------------------

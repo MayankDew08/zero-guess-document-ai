@@ -172,14 +172,14 @@ def _expand_multipage_sections(retrieved: list[RetrievedChunk], app_store: AppSt
     have = {r.chunk.chunk_id for r in retrieved}
     extra: list[RetrievedChunk] = []
     for r in retrieved[:look_at]:
-        sec = r.chunk.section
+        sec = r.chunk.section_context or r.chunk.section  # same topic AND section, never just the same heading text
         if not sec or r.chunk.chunk_type == "table":
             continue
         for ch in app_store.all_chunks():
             if len(extra) >= max_extra:
                 break
             if (ch.chunk_id in have or ch.chunk_id not in allowed_ids or ch.doc_id != r.chunk.doc_id
-                    or ch.section != sec or ch.page == r.chunk.page):
+                    or (ch.section_context or ch.section) != sec or ch.page == r.chunk.page):
                 continue
             have.add(ch.chunk_id)
             extra.append(RetrievedChunk(chunk=ch, score=0.0, rerank_score=None, retrieval_rank=len(retrieved) + len(extra) + 1,

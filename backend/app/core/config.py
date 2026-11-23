@@ -46,8 +46,8 @@ class Settings:
     embedding_backend: str = os.getenv("EMBEDDING_BACKEND", "sentence-transformers")
 
     reranker_model: str = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
-    reranker_top_k: int = _int("RERANKER_TOP_K", 12)
-    reranker_keep_top_n: int = _int("RERANKER_KEEP_TOP_N", 5)
+    reranker_top_k: int = _int("RERANKER_TOP_K", 20)
+    reranker_keep_top_n: int = _int("RERANKER_KEEP_TOP_N", 7)
     rerank_abstain_threshold: float = _float("RERANK_ABSTAIN_THRESHOLD", 0.25)
 
     nli_model: str = os.getenv("NLI_MODEL", "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli")
@@ -57,7 +57,7 @@ class Settings:
 
     chunk_target_chars: int = _int("CHUNK_TARGET_CHARS", 450)
     chunk_overlap_chars: int = _int("CHUNK_OVERLAP_CHARS", 0)
-    hybrid_top_k: int = _int("HYBRID_TOP_K", 12)
+    hybrid_top_k: int = _int("HYBRID_TOP_K", 20)
 
     data_dir: str = os.getenv("DATA_DIR", "../data")
     index_dir: str = os.getenv("INDEX_DIR", "../data/index")
