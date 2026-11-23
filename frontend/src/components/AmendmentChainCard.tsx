@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { AmendmentChain } from '../types'
 import { Badge, Chip, SectionLabel, type Tone } from './ui'
@@ -31,6 +31,8 @@ function EdgeEvidence({ edge, onOpenEvidence }: { edge: AmendmentEdge; onOpenEvi
 /** Timeline oldest → newest (doc_ids_ordered). Edges point NEWER (from) → OLDER (to). */
 export function AmendmentChainCard({ chain, onOpenEvidence }: { chain: AmendmentChain; onOpenEvidence: OpenEvidence }) {
   const [openEdge, setOpenEdge] = useState<string | null>(null)
+  const evRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (openEdge) evRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }, [openEdge])
   const ids = chain.doc_ids_ordered
   const names = chain.doc_names_ordered?.length ? chain.doc_names_ordered : ids
   const edges = chain.edges as AmendmentEdge[]
@@ -74,7 +76,7 @@ export function AmendmentChainCard({ chain, onOpenEvidence }: { chain: Amendment
           })}
         </div>
       </div>
-      {expanded ? <div className="mt-2"><EdgeEvidence edge={expanded} onOpenEvidence={onOpenEvidence} /></div> : null}
+      {expanded ? <div ref={evRef} className="mt-2 scroll-mb-4"><EdgeEvidence edge={expanded} onOpenEvidence={onOpenEvidence} /></div> : null}
       {extra.length ? (
         <div className="mt-2 space-y-2">
           <SectionLabel>Other lineage edges</SectionLabel>

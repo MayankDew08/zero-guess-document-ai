@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import queue
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
@@ -283,8 +286,27 @@ async def ingest_samples_endpoint(workspace: str = DEFAULT_WORKSPACE) -> dict[st
     }
 
 
+def _ask_payload(resp: AskResponse) -> dict[str, Any]:
+    data = resp.model_dump()
+    data["explanation"] = {
+        "claim_verdicts": [
+            {"claim_id": c["claim_id"], "text": c["text"], "status": c["status"], "reason": c.get("reason"), "citations": c.get("citations", [])}
+            for c in data.get("claims", [])
+        ],
+        "blocked_claims": data.get("blocked_claims", []),
+        "contradictions": data.get("contradictions", []),
+        "amendment_chains": data.get("amendment_chains", []),
+        "confidence": data.get("confidence"),
+        "confidence_breakdown": data.get("confidence_breakdown"),
+        "calculation": data.get("calculation"),
+    }
+    return data
+
+
+# Plain `def` (not async): the pipeline is synchronous and CPU/LLM bound, so FastAPI runs it in its threadpool
+# instead of blocking the event loop (and /api/health) for the whole request.
 @app.post("/api/ask")
-async def ask(req: AskRequest) -> dict[str, Any]:
+def ask(req: AskRequest) -> dict[str, Any]:
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="question is required")
     try:
@@ -296,25 +318,53 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             app_store=_ws(req.workspace),
             history=req.history,
         )
-        data = resp.model_dump()
-        data["explanation"] = {
-            "claim_verdicts": [
-                {"claim_id": c["claim_id"], "text": c["text"], "status": c["status"], "reason": c.get("reason"), "citations": c.get("citations", [])}
-                for c in data.get("claims", [])
-            ],
-            "blocked_claims": data.get("blocked_claims", []),
-            "contradictions": data.get("contradictions", []),
-            "amendment_chains": data.get("amendment_chains", []),
-            "confidence": data.get("confidence"),
-            "confidence_breakdown": data.get("confidence_breakdown"),
-            "calculation": data.get("calculation"),
-        }
-        return data
+        return _ask_payload(resp)
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Ask failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ask/stream")
+def ask_stream(req: AskRequest) -> StreamingResponse:
+    """Same pipeline as /api/ask, streamed as SSE: `stage` events (real progress), then one `result` (the full
+    AskResponse payload) or `error`. Validation errors are raised before streaming starts (normal HTTP status)."""
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    app_store = _ws(req.workspace)
+    events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
+
+    def worker() -> None:
+        try:
+            resp = ask_question(
+                question=question, doc_ids=req.doc_ids, top_k=req.top_k, debug=req.debug, app_store=app_store,
+                history=req.history, on_stage=lambda e: events.put(("stage", e.model_dump())),
+            )
+            events.put(("result", _ask_payload(resp)))
+        except Exception as e:
+            logger.exception("Ask (stream) failed")
+            events.put(("error", {"detail": str(e)}))
+        finally:
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True, name="ask-stream").start()
+
+    def gen():
+        while True:
+            try:
+                item = events.get(timeout=15)
+            except queue.Empty:
+                yield ": keepalive\n\n"  # keeps proxies/browsers from closing an idle stream during slow model loads
+                continue
+            if item is None:
+                return
+            kind, payload = item
+            yield f"event: {kind}\ndata: {json.dumps(payload, default=str)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/explain")

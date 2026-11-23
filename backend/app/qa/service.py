@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,11 +22,13 @@ from app.models.schemas import (
     Gate3Trace,
     Gate4Trace,
     PipelineTrace,
+    StageEvent,
 )
 from app.qa.decompose import split_question_parts
 from app.qa.followup import MAX_HISTORY_TURNS, build_clarification, plan_turn
 from app.qa.llm import LLMProvider, OllamaLLMProvider
 from app.qa.prompt import build_claim_prompt, is_hindi
+from app.qa.stages import ProgressNLI, StageReporter
 from app.qa.translate import render_claims_in_hindi
 from app.retrieval.embeddings import EmbeddingProvider
 from app.retrieval.reranker import RerankerProvider
@@ -122,15 +125,24 @@ def ask_question(
     nli_provider: NLIProvider | None = None,
     llm_provider: LLMProvider | None = None,
     history: list[ChatTurn] | None = None,
+    on_stage: Callable[[StageEvent], None] | None = None,
 ) -> AskResponse:
     """Conversational entry point. With no history this is exactly `_ask_pipeline`.
 
     The follow-up layer only decides WHICH QUESTION STRING enters the pipeline (or asks the user for missing
     calculation inputs). Chat history is never passed to retrieval, drafting or verification, so it can never
     be cited: every turn independently passes Gates 1-4 against the stored PDF chunks of `app_store`."""
+    rep = StageReporter(on_stage)  # optional UI telemetry; with on_stage=None every call below is a no-op
+    if history:
+        rep.start("understand")
     plan = plan_turn(question, history, llm=_resolve_llm(llm_provider) if history else None)
-    resp = _ask_pipeline(plan.pipeline_question, doc_ids, top_k, debug, app_store, embedding_provider,
-                         reranker_provider, nli_provider, llm_provider)
+    if history:
+        rep.done("understand", rewritten=bool(plan.rewritten_question))
+    try:
+        resp = _ask_pipeline(plan.pipeline_question, doc_ids, top_k, debug, app_store, embedding_provider,
+                             reranker_provider, nli_provider, llm_provider, reporter=rep)
+    finally:
+        rep.finalize()
     resp.question = question  # what the user typed; the resolved text is exposed via rewritten_question
     resp.workspace = app_store.workspace
     resp.rewritten_question = plan.rewritten_question
@@ -151,7 +163,9 @@ def _ask_pipeline(
     reranker_provider: RerankerProvider | None = None,
     nli_provider: NLIProvider | None = None,
     llm_provider: LLMProvider | None = None,
+    reporter: StageReporter | None = None,
 ) -> AskResponse:
+    rep = reporter or StageReporter(None)
     request_id = f"req_{uuid.uuid4().hex[:12]}"
     top_k = top_k or settings.hybrid_top_k
     hindi = is_hindi(question)
@@ -161,10 +175,18 @@ def _ask_pipeline(
     # Gate 1: retrieve + rerank + CRAG pre-generation abstention
     # Compound questions ("... and what is ...") are split; every part gets its own retrieval, CRAG gate and draft.
     parts = split_question_parts(question)
+    rep.start("retrieve", parts=len(parts))
+    extra = {"progress": rep.start} if rep.enabled else {}
     part_results = [retrieve(query=p, top_k=top_k, doc_ids=doc_ids, app_store=app_store,
                              embedding_provider=embedding_provider, reranker_provider=reranker_provider,
-                             apply_reranker=True, apply_crag_gate=True) for p in parts]
+                             apply_reranker=True, apply_crag_gate=True, **extra) for p in parts]
     retrieval = _merge_retrievals(part_results)
+    rep.done("retrieve", parts=len(parts), candidates=retrieval.hybrid_candidates)
+    if rep.started("rerank"):
+        rep.done("rerank", kept=retrieval.reranked_kept, max_score=retrieval.max_rerank_score,
+                 threshold=settings.rerank_abstain_threshold, passed=bool(retrieval.crag_passed and retrieval.chunks))
+    else:
+        rep.skip("rerank")
     debug_info: dict[str, Any] = {"retrieval": {
         "total_indexed_chunks": retrieval.total_indexed_chunks, "crag_passed": retrieval.crag_passed,
         "max_rerank_score": retrieval.max_rerank_score,
@@ -192,6 +214,7 @@ def _ask_pipeline(
     blocked: list = []
     draft = DraftAnswer()
     if retrieval.chunks and retrieval.crag_passed:
+        rep.start("draft")
         claims_all: list[DraftClaim] = []
         missing_all: list[str] = []
         raws: list[dict] = []
@@ -218,11 +241,23 @@ def _ask_pipeline(
                 c.claim_id = f"c{i}"
             debug_info["question_parts"] = parts
         draft = DraftAnswer(claims=claims_all, missing_evidence=missing_all)
+        rep.done("draft", claims=len(claims_all))
         raw_draft = raws[0] if len(raws) == 1 else raws
         debug_info["llm_raw"] = raw_draft
         debug_info["draft_claims"] = [c.model_dump() for c in draft.claims]
         # Gate 2 + Gate 3
-        shown, blocked = resolve_and_verify_claims(draft.claims, app_store, nli)
+        rep.start("resolve", claims=len(draft.claims))
+        gate_nli = nli
+        if rep.enabled and nli is not None:
+            def _first_nli(loaded: bool) -> None:  # Gate 2 is deterministic and instant; the first NLI call starts Gate 3
+                rep.done("resolve")
+                rep.start("verify", **({} if loaded else {"loading_model": getattr(nli, "model_name", "nli")}))
+            gate_nli = ProgressNLI(nli, _first_nli)
+        shown, blocked = resolve_and_verify_claims(draft.claims, app_store, gate_nli)
+        _t = _build_trace(retrieval, draft, shown, blocked, app_store.amendment_edges, [], len(chains), False)
+        rep.done("resolve", resolved=_t.gate2_citation_resolution.resolved_citations, rejected=_t.gate2_citation_resolution.rejected_invalid_ids)
+        rep.done("verify", nli_passed=_t.gate3_nli_and_numeric.nli_passed, nli_failed=_t.gate3_nli_and_numeric.nli_failed,
+                 numeric_failed=_t.gate3_nli_and_numeric.numeric_failed)
         old_docs = superseded_for_current_rule(question, {r.chunk.doc_id for r in retrieval.chunks}, app_store)
         if old_docs:
             debug_info["superseded_for_current_rule"] = old_docs
@@ -231,20 +266,25 @@ def _ask_pipeline(
             # Bounded self-repair: every drafted claim failed Gate 2/3. Ask ONCE more (same evidence, same gates) with
             # the blocked claims listed and their sentence ids excluded. Nothing is relaxed: repaired claims are
             # re-verified exactly like the first ones, and the first round's blocked claims stay reported.
+            rep.start("repair")
             repair = _repair_claims(parts, part_results, blocked, app_store, llm, hindi)
             if repair:
                 debug_info["repair_round"] = [c.model_dump() for c in repair]
                 shown2, blocked2 = resolve_and_verify_claims(repair, app_store, nli)
                 shown, blocked = _drop_superseded_only(shown2, blocked + blocked2, old_docs)
                 draft = DraftAnswer(claims=list(draft.claims) + repair, missing_evidence=draft.missing_evidence)
+            rep.done("repair", claims=len(repair or []))
         shown = _dedupe_claims(shown)
         if hindi:  # stage 2: verified Hindi rendering of the verified English claims
+            rep.start("translate")
             hindi_notes = render_claims_in_hindi(shown, llm, nli)
+            rep.done("translate")
             debug_info["hindi_rendering_notes"] = hindi_notes
         debug_info["verification"] = {"shown": [c.model_dump() for c in shown], "blocked": [c.model_dump() for c in blocked]}
 
     # Amendment-aware contradiction detection (conflicts explained by the amendment graph are excluded)
     contradictions = []
+    rep.start("lineage")
     if settings.enable_contradictions:
         contradictions = detect_contradictions(shown, retrieval, app_store.amendment_edges, nli_provider=nli,
                                                app_store=app_store, question=question)
@@ -253,6 +293,7 @@ def _ask_pipeline(
 
     retrieved_doc_ids = {r.chunk.doc_id for r in retrieval.chunks}
     chains = [c for c in chains if set(c.doc_ids_ordered) & retrieved_doc_ids]
+    rep.done("lineage", chains=len(chains), conflicts=len(contradictions))
 
     # Gate 4: abstain if nothing survives verification
     # The LLM's own "missing" notes are dropped when the deterministic calculator produced the figure.

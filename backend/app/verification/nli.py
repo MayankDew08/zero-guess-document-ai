@@ -32,6 +32,9 @@ class HFNLIProvider:
             cls._device = device
         return cls._instance
 
+    def is_loaded(self) -> bool:
+        return self._pipe is not None
+
     def _load(self):
         if self._pipe is not None:
             return

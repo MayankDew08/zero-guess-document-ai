@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ChevronDown, type LucideIcon } from "lucide-react";
 
 export type Tone = "emerald" | "rose" | "amber" | "sky" | "zinc";
@@ -24,16 +24,17 @@ export function Badge({ children, tone = "zinc", className = "", dashed = false 
   );
 }
 
-export function Chip({ children, tone = "zinc", className = "", onClick, title }: {
+export function Chip({ children, tone = "zinc", className = "", onClick, title, ariaLabel }: {
   children: ReactNode;
   tone?: Tone;
   className?: string;
   onClick?: () => void;
   title?: string;
+  ariaLabel?: string;
 }) {
   const classes = `inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium leading-none transition-colors ${toneClasses[tone]} ${onClick ? "cursor-pointer hover:brightness-125 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40" : ""} ${className}`;
   if (onClick) {
-    return <button type="button" className={classes} onClick={onClick} title={title}>{children}</button>;
+    return <button type="button" className={classes} onClick={onClick} title={title} aria-label={ariaLabel}>{children}</button>;
   }
   return <span className={classes} title={title}>{children}</span>;
 }
@@ -52,7 +53,7 @@ export function MetricTile({ label, value, sub, tone = "zinc", prominent = false
       <div className={`mt-1 font-mono tabular-nums leading-none tracking-tight ${prominent ? "text-[24px]" : "text-[20px]"} ${tone === "emerald" ? "text-emerald-300" : tone === "rose" ? "text-rose-300" : tone === "amber" ? "text-amber-300" : tone === "sky" ? "text-sky-300" : "text-zinc-200"}`}>
         {value}
       </div>
-      {sub ? <div className="mt-1.5 truncate text-[10px] leading-4 text-zinc-500" title={sub}>{sub}</div> : null}
+      {sub ? <div className="mt-1.5 break-words text-[10px] leading-4 text-zinc-400" title={sub}>{sub}</div> : null}
       {children}
     </div>
   );
@@ -71,12 +72,19 @@ export function Collapse({ title, children, className = "", initialOpen = false,
   trailing?: ReactNode;
 }) {
   const [isOpen, setIsOpen] = useState(initialOpen);
+  const root = useRef<HTMLDivElement>(null);
+  const toggle = () => {
+    const opening = !isOpen;
+    setIsOpen(opening);
+    // Once the expand transition has run, make sure the newly revealed content is actually visible.
+    if (opening) window.setTimeout(() => root.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 180);
+  };
   return (
-    <div className={className}>
+    <div ref={root} className={`${className} scroll-mb-4`}>
       <button
         type="button"
         aria-expanded={isOpen}
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={toggle}
         className="group flex w-full items-center gap-2 rounded-lg text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sky-500/40"
       >
         {Icon ? <Icon aria-hidden="true" size={15} strokeWidth={1.75} className="shrink-0 text-zinc-400" /> : null}

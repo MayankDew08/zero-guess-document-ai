@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 
 from app.core.config import settings
@@ -16,6 +18,12 @@ from app.retrieval.embeddings import (
 from app.retrieval.reranker import CrossEncoderRerankerProvider, RerankerProvider
 
 logger = get_logger(__name__)
+
+
+def _loaded(provider: object) -> bool:
+    """Providers without is_loaded() (test fakes) are treated as already loaded."""
+    fn = getattr(provider, "is_loaded", None)
+    return True if fn is None else bool(fn())
 
 
 def resolve_embedding_provider(explicit: EmbeddingProvider | None = None) -> EmbeddingProvider:
@@ -69,7 +77,9 @@ def retrieve(
     reranker_provider: RerankerProvider | None = None,
     apply_reranker: bool = True,
     apply_crag_gate: bool = True,
+    progress: Callable[..., None] | None = None,
 ) -> RetrievalResult:
+    """`progress(stage, **detail)` is optional UI telemetry only; it never affects retrieval."""
     top_k = top_k or settings.hybrid_top_k
     chunks = app_store.all_chunks(doc_ids=doc_ids)
     if not chunks:
@@ -94,6 +104,8 @@ def retrieve(
     bm25_scores = {cid: s for cid, s in bm25_hits}
 
     provider = resolve_embedding_provider(embedding_provider)
+    if progress and not _loaded(provider):
+        progress("retrieve", loading_model=getattr(provider, "model_name", "embedding"))
     qvec = provider.embed([query])
     sem_hits = _cosine_search(qvec[0], emb, top_k=top_k) if len(qvec) else []
     sem_ranked = [emb_ids[i] for i, _ in sem_hits if i < len(emb_ids)]
@@ -131,6 +143,8 @@ def retrieve(
             reranker = CrossEncoderRerankerProvider.get_instance()
         if reranker is not None:
             reranker_used = True
+            if progress:
+                progress("rerank", **({} if _loaded(reranker) else {"loading_model": getattr(reranker, "model_name", "reranker")}))
             scores = reranker.rerank(query, [retrieval_text(r.chunk) for r in retrieved])
         else:
             scores = [r.score for r in retrieved]

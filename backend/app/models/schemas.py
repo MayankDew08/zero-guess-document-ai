@@ -247,6 +247,14 @@ class ClarificationNeeded(BaseModel):
     pending_calculation: dict = Field(default_factory=dict)
 
 
+class StageEvent(BaseModel):
+    """Progress snapshot for one pipeline stage. Later events for the same `stage` overwrite earlier ones."""
+    stage: str
+    status: Literal["start", "done", "skipped"]
+    detail: dict[str, Any] = Field(default_factory=dict)
+    ms: int | None = None
+
+
 class AskRequest(BaseModel):
     question: str
     doc_ids: list[str] | None = None

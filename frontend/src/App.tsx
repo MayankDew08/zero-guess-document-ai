@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PanelLeft, ShieldCheck, SquarePen, XCircle } from 'lucide-react'
-import type { AskResponse, ChatTurn, CorpusSummary, Mode, Workspace, WorkspacesSummary } from './types'
+import type { AskResponse, ChatTurn, CorpusSummary, Mode, StageEvent, Workspace, WorkspacesSummary } from './types'
 import {
-  ask, clearDocuments, createReport, deleteDocument, getDocuments, getHealth, getWorkspacesSummary, ingestSamples, renderUrl, reportDownloadUrl, uploadFiles,
+  askStream, clearDocuments, createReport, deleteDocument, getDocuments, getHealth, getWorkspacesSummary, ingestSamples, renderUrl, reportDownloadUrl, uploadFiles,
 } from './api/client'
 import { TurnAnswer } from './components/answer'
 import type { EvidenceRef } from './components/answer'
+import { mergeStage, type ClientStage } from './components/stages'
 import { ComplianceBanner, Composer, EvidenceDrawer, LibrarySidebar, MODES, SuggestionChips, TopBar } from './components/shell'
 import type { LibraryDoc, Suggestion } from './components/shell'
 
@@ -20,7 +21,7 @@ const PRESETS: Suggestion[] = [
   { tag: 'Clarifying Follow-Up / Zero-Guessing Math', question: 'Calculate my late payment penalty under the latest active rule.' },
 ]
 
-type Turn = { id: number; question: string; response?: AskResponse; error?: string; loading: boolean }
+type Turn = { id: number; question: string; response?: AskResponse; error?: string; loading: boolean; stages: ClientStage[] }
 type Library = { docs: any[]; summary: CorpusSummary | null }
 const EMPTY_LIB: Library = { docs: [], summary: null }
 
@@ -72,8 +73,17 @@ export default function App() {
     void refresh('bank_official'); void refresh('byo_private'); void refreshCompliance()
     getHealth().then(setHealth).catch(() => setHealth(null))
   }, [refresh, refreshCompliance])
-  const lastLoading = thread[thread.length - 1]?.loading
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [thread.length, lastLoading])
+  const lastTurn = thread[thread.length - 1]
+  const lastLoading = lastTurn?.loading
+  const lastId = lastTurn?.id
+  // New turn: show the question and the live progress card at the bottom.
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [thread.length])
+  // Answer arrived: jump to the TOP of that turn (headline + metrics), not the bottom of a long answer.
+  const wasLoading = useRef(false)
+  useEffect(() => {
+    if (wasLoading.current && !lastLoading && lastId !== undefined) document.getElementById(`turn-${lastId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    wasLoading.current = !!lastLoading
+  }, [lastLoading, lastId])
 
   function switchMode(m: Mode) {
     if (m === mode) return
@@ -126,10 +136,12 @@ export default function App() {
     const history = turnsToHistory(threads[ws])
     const id = nextId.current++
     setError(null); setAsking(true); setElapsed(0); setQuestion('')
-    setThreads(t => ({ ...t, [ws]: [...t[ws], { id, question: q, loading: true }] }))
+    setThreads(t => ({ ...t, [ws]: [...t[ws], { id, question: q, loading: true, stages: [] }] }))
     timer.current = window.setInterval(() => setElapsed(s => s + 1), 1000)
     const patch = (p: Partial<Turn>) => setThreads(t => ({ ...t, [ws]: t[ws].map(x => (x.id === id ? { ...x, ...p, loading: false } : x)) }))
-    try { patch({ response: await ask(q, { workspace: ws, history }) }) } catch (e: any) { patch({ error: e.message || String(e) }) } finally { setAsking(false); if (timer.current) window.clearInterval(timer.current) }
+    // Stage events only touch `stages`; `patch` (which ends loading) is reserved for the final response/error.
+    const patchStages = (e: StageEvent) => setThreads(t => ({ ...t, [ws]: t[ws].map(x => (x.id === id ? { ...x, stages: mergeStage(x.stages, e) } : x)) }))
+    try { patch({ response: await askStream(q, { workspace: ws, history }, patchStages) }) } catch (e: any) { patch({ error: e.message || String(e) }) } finally { setAsking(false); if (timer.current) window.clearInterval(timer.current) }
   }
   const newChat = () => { setThreads(t => ({ ...t, [workspace]: [] })); setEvidence(null); setError(null); setQuestion('') }
 
@@ -171,14 +183,14 @@ export default function App() {
           onUpload={onUpload} onLoadSamples={onSamples} onDeleteDoc={onDelete} onClear={onClear} />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-[900px] px-3 pb-6 pt-5 sm:px-6 sm:pt-7">
+            <div className="mx-auto w-full max-w-[900px] px-3 pb-12 pt-5 sm:px-6 sm:pt-7">
               <div className="mb-5 flex items-center justify-between gap-4">
                 <div>
                   <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-emerald-300"><ShieldCheck aria-hidden="true" size={13} />Verification-first session</p>
                   <h2 className="mt-1 text-lg font-semibold tracking-tight text-zinc-100">Policy evidence review</h2>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="hidden text-[10px] text-zinc-600 md:block">{thread.length === 0 ? 'New chat' : `${thread.length} turn${thread.length > 1 ? 's' : ''} · earlier answers are never used as evidence`}</span>
+                  <span className="hidden text-[10px] text-zinc-600 md:block">{thread.length === 0 ? '' : `${thread.length} turn${thread.length > 1 ? 's' : ''} · earlier answers are never used as evidence`}</span>
                   <button type="button" onClick={newChat} disabled={asking || thread.length === 0} className="inline-flex items-center gap-1.5 rounded-lg bg-[#10151D] px-3 py-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 disabled:opacity-40"><SquarePen aria-hidden="true" size={13} />New chat</button>
                 </div>
               </div>
@@ -202,14 +214,14 @@ export default function App() {
 
               <div className="space-y-6" aria-live="polite">
                 {thread.map((t, idx) => (
-                  <section key={t.id} className="space-y-3" data-testid="turn" aria-label={`Conversation turn: ${t.question}`}>
+                  <section key={t.id} id={`turn-${t.id}`} className="scroll-mt-4 space-y-3" data-testid="turn" aria-label={`Conversation turn: ${t.question}`}>
                     <div className="flex justify-end">
                       <div className="max-w-[80%] rounded-2xl rounded-br-md bg-[#202833] px-3.5 py-2.5 sm:max-w-[70%]">
                         <p className="whitespace-pre-wrap text-[13px] leading-5 text-zinc-100">{t.question}</p>
                         {t.response?.rewritten_question ? <p data-testid="resolved-followup" className="mt-1.5 text-[10px] italic leading-4 text-zinc-500">↳ resolved: {t.response.rewritten_question}</p> : null}
                       </div>
                     </div>
-                    <TurnAnswer loading={t.loading} error={t.error} response={t.response} elapsed={elapsed} onOpenEvidence={open}
+                    <TurnAnswer loading={t.loading} error={t.error} response={t.response} elapsed={elapsed} stages={t.stages} onOpenEvidence={open}
                       onClarifySubmit={onClarifySubmit} onExportReport={id => void onExportReport(id)} clarifyActive={idx === thread.length - 1} busy={asking} />
                   </section>
                 ))}

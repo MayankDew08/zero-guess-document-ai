@@ -34,6 +34,9 @@ class SentenceTransformerEmbeddingProvider:
             cls._device = device
         return cls._instance
 
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
     def _load(self):
         if self._model is not None:
             return

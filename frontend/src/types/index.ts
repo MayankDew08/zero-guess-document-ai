@@ -124,3 +124,11 @@ export interface CorpusSummary {
   documents: number; pages: number; chunks: number; table_chunks: number; sentences: number;
   amendment_edges: number; superseded_docs: number; indexed: boolean;
 }
+
+/** One pipeline stage snapshot from /api/ask/stream. Later events for the same `stage` overwrite earlier ones. */
+export interface StageEvent {
+  stage: string;
+  status: 'start' | 'done' | 'skipped';
+  detail: Record<string, any>;
+  ms: number | null;
+}

@@ -11,6 +11,7 @@ import { CalculationCard } from './CalculationCard'
 import { ClarifyCard } from './ClarifyCard'
 import { TraceCard } from './TraceCard'
 import { LoadingCard } from './LoadingCard'
+import type { ClientStage } from './stages'
 import type { OpenEvidence } from './evidence'
 
 export type { EvidenceRef, OpenEvidence } from './evidence'
@@ -102,14 +103,14 @@ export function AnswerBlock({ response: r, onOpenEvidence, onClarifySubmit, onEx
 }
 
 /** One conversation turn's answer slot: loading → error → response. */
-export function TurnAnswer({ loading, error, response, elapsed, ...rest }: {
-  loading: boolean; error?: string; response?: AskResponse; elapsed: number
+export function TurnAnswer({ loading, error, response, elapsed, stages, ...rest }: {
+  loading: boolean; error?: string; response?: AskResponse; elapsed: number; stages: ClientStage[]
   onOpenEvidence: OpenEvidence
   onClarifySubmit: (baseQuestion: string, values: Record<string, string>) => void
   onExportReport: (requestId: string) => void
   clarifyActive: boolean; busy: boolean
 }) {
-  if (loading) return <LoadingCard elapsedSeconds={elapsed} />
+  if (loading) return <LoadingCard elapsedSeconds={elapsed} stages={stages} />
   if (error) return <div role="alert" className="flex items-start gap-2 rounded-xl bg-rose-400/[0.07] px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-400/20"><XCircle aria-hidden="true" size={15} className="mt-0.5 shrink-0" /><span className="min-w-0 break-words">{error}</span></div>
   if (!response) return null
   return <AnswerBlock response={response} {...rest} />
