@@ -192,3 +192,41 @@ def find_rate_tenure(app_store: AppStore, doc_ids: set[str]) -> Decimal | None:
                     if unit == "duration:month":
                         return Decimal(str(val))
     return None
+
+
+# ------------------------------------------------------------------ input-gap helpers (follow-up layer)
+_CALC_INTENT = re.compile(r"\b(calculate|compute|work\s+out)\b|गणना", re.I)
+_FIRST_PERSON_HOWMUCH = re.compile(r"\bhow\s+much\b(?=.*\b(?:my|i|me|we|our)\b)", re.I)
+
+
+def calc_kind(question: str) -> str:
+    """'late_fee' | 'interest' | 'emi' (same classifier the calculator itself uses)."""
+    return _kind(question)
+
+
+def is_calculation_intent(question: str) -> bool:
+    """The user ASKS FOR A COMPUTATION about a fee/penalty/interest/EMI (inputs may still be missing).
+    Plain factual questions such as 'How much is the late payment fee?' are not calculation intents."""
+    return bool((_CALC_INTENT.search(question) or _FIRST_PERSON_HOWMUCH.search(question)) and _TOPIC_WORDS.search(question))
+
+
+def required_inputs(kind: str) -> list[str]:
+    """Inputs only the user can supply. Interest/EMI tenure may come from the loan document, so only principal is required."""
+    return ["principal", "months"] if kind == "late_fee" else ["principal"]
+
+
+def missing_inputs(question: str) -> list[str]:
+    have = {"principal": parse_amount(question) is not None, "months": parse_months(question) is not None}
+    return [k for k in required_inputs(_kind(question)) if not have[k]]
+
+
+def lookup_active_rate(app_store: AppStore, kind: str) -> dict | None:
+    """Verified rate (stored sentence of the active rule) for a calculation kind — never from an LLM."""
+    subject = "late payment fee" if kind == "late_fee" else "interest rate"
+    found = find_rate(app_store, subject, _candidate_docs(app_store))
+    if not found:
+        return None
+    sent, rate, period, ch = found
+    default_period = "month" if kind == "late_fee" else "year"
+    return {"rate": rate, "rate_text": _num(rate), "period": period or default_period,
+            "sentence_id": sent.sentence_id, "source": f"{ch.doc_name} p.{ch.page}"}

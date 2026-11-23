@@ -13,6 +13,7 @@ from app.core.logging import get_logger
 from app.core.store import AppStore, store
 from app.models.schemas import (
     AskResponse,
+    ChatTurn,
     DraftAnswer,
     DraftClaim,
     Gate1Trace,
@@ -22,6 +23,7 @@ from app.models.schemas import (
     PipelineTrace,
 )
 from app.qa.decompose import split_question_parts
+from app.qa.followup import MAX_HISTORY_TURNS, build_clarification, plan_turn
 from app.qa.llm import LLMProvider, OllamaLLMProvider
 from app.qa.prompt import build_claim_prompt, is_hindi
 from app.qa.translate import render_claims_in_hindi
@@ -110,6 +112,36 @@ def _abstain(request_id, question, hindi, missing, debug_info, debug, trace=None
 
 
 def ask_question(
+    question: str,
+    doc_ids: list[str] | None = None,
+    top_k: int | None = None,
+    debug: bool = False,
+    app_store: AppStore = store,
+    embedding_provider: EmbeddingProvider | None = None,
+    reranker_provider: RerankerProvider | None = None,
+    nli_provider: NLIProvider | None = None,
+    llm_provider: LLMProvider | None = None,
+    history: list[ChatTurn] | None = None,
+) -> AskResponse:
+    """Conversational entry point. With no history this is exactly `_ask_pipeline`.
+
+    The follow-up layer only decides WHICH QUESTION STRING enters the pipeline (or asks the user for missing
+    calculation inputs). Chat history is never passed to retrieval, drafting or verification, so it can never
+    be cited: every turn independently passes Gates 1-4 against the stored PDF chunks of `app_store`."""
+    plan = plan_turn(question, history, llm=_resolve_llm(llm_provider) if history else None)
+    resp = _ask_pipeline(plan.pipeline_question, doc_ids, top_k, debug, app_store, embedding_provider,
+                         reranker_provider, nli_provider, llm_provider)
+    resp.question = question  # what the user typed; the resolved text is exposed via rewritten_question
+    resp.workspace = app_store.workspace
+    resp.rewritten_question = plan.rewritten_question
+    resp.clarification_needed = build_clarification(plan, app_store)
+    if debug and resp.debug is not None:
+        resp.debug["followup"] = {"pipeline_question": plan.pipeline_question, "notes": plan.notes,
+                                  "history_turns_considered": len((history or [])[-MAX_HISTORY_TURNS:])}
+    return resp
+
+
+def _ask_pipeline(
     question: str,
     doc_ids: list[str] | None = None,
     top_k: int | None = None,

@@ -116,6 +116,12 @@ Demo walkthrough (≈ 3 minutes):
 
 Amendment detection understands `supersedes / replaces / amends`, `in partial modification of`, `hereby amended to read as`, `Circular No. …`, `Master Direction …`, `w.e.f.` / `with effect from` / `dated dd.mm.yyyy`. Numbers are normalised across `₹`, `Rs.`, `INR`, `lakh`/`crore` and Indian grouping (`1,00,000` = `1 lakh`). Tables are extracted with `find_tables()`; scanned PDFs need OCR (not bundled).
 
+## Workspaces & conversational layer
+
+- **3 modes** (top bar): *Bank Admin* (manage the official corpus + live Compliance Audit banner), *Bank Customer* (same `bank_official` corpus, read-only UI) and *BYO Private Docs* (`byo_private`, an isolated sandbox for any unseen PDF).
+- **Isolation:** every endpoint takes `?workspace=bank_official|byo_private` (default `bank_official`, so old clients/scripts are unchanged). Each workspace has its own documents, chunks, BM25/vectors, amendment graph and `data/index/<workspace>/` folder. bge-m3, bge-reranker-v2-m3 and mDeBERTa stay **process-wide singletons** shared by both, so a second workspace costs no model RAM. `GET /api/workspaces/summary` returns per-workspace `doc_count`, `chunk_count`, `amendment_chains_count`, `unresolved_contradictions_count`.
+- **Chat memory is not evidence.** `POST /api/ask` accepts `history` (last 2 turns used). It can only change *which question string* enters Gates 1-4 (or ask for missing calculation inputs); history is never passed to claim drafting and never cited. Responses add `rewritten_question` (shown as "Resolved follow-up") and `clarification_needed` (slot form: calculation without amount/months returns the verified active rate and asks, instead of guessing). Logic: `backend/app/qa/followup.py`.
+
 ## Tests & checks
 
 ```bash

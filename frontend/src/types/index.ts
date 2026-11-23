@@ -89,7 +89,36 @@ export interface AskResponse {
   confidence_breakdown?: Record<string, number> | null;
   explanation?: any;
   debug?: any;
+  workspace?: Workspace;
+  rewritten_question?: string | null;
+  clarification_needed?: ClarificationNeeded | null;
 }
+
+export type Workspace = 'bank_official' | 'byo_private';
+export type Mode = 'admin' | 'customer' | 'byo';
+
+export interface MissingField { key: string; label: string; placeholder: string }
+export interface ClarificationNeeded {
+  kind: 'calculation_inputs';
+  message: string;
+  missing_fields: MissingField[];
+  base_question: string;
+  pending_calculation: Record<string, any>;
+}
+
+/** Sent as `history`; only used server-side to resolve follow-ups. Never evidence. */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  question: string;
+  answer_summary: string;
+  pending_calculation: Record<string, any> | null;
+}
+
+export interface WorkspaceStats {
+  doc_count: number; chunk_count: number; amendment_chains_count: number; unresolved_contradictions_count: number;
+  contradiction_subjects: string[]; doc_names: string[];
+}
+export type WorkspacesSummary = Record<Workspace, WorkspaceStats>;
 
 export interface CorpusSummary {
   documents: number; pages: number; chunks: number; table_chunks: number; sentences: number;

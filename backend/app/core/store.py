@@ -19,6 +19,7 @@ class AppStore:
     bm25_chunk_ids: list[str] = field(default_factory=list)
     embeddings = None  # numpy array
     embedding_chunk_ids: list[str] = field(default_factory=list)
+    workspace: str = "bank_official"
 
     def reset(self) -> None:
         self.documents.clear()
@@ -107,4 +108,26 @@ class AppStore:
         return True
 
 
-store = AppStore()
+# --------------------------------------------------------------------------- workspaces
+# Each workspace owns an isolated AppStore (documents, chunks, sentences, amendment graph, BM25 + vectors).
+# The heavy ML models (bge-m3, bge-reranker-v2-m3, mDeBERTa NLI) are process-wide singletons and are NOT
+# part of the store, so adding a workspace costs no extra model RAM (only its own small vector matrix).
+DEFAULT_WORKSPACE = "bank_official"
+WORKSPACES: tuple[str, ...] = ("bank_official", "byo_private")
+
+# `store` is the bank_official corpus (kept as a module global for backwards compatibility).
+store = AppStore(workspace=DEFAULT_WORKSPACE)
+_stores: dict[str, AppStore] = {DEFAULT_WORKSPACE: store, "byo_private": AppStore(workspace="byo_private")}
+
+
+def is_valid_workspace(workspace: str) -> bool:
+    return workspace in WORKSPACES
+
+
+def get_store(workspace: str = DEFAULT_WORKSPACE) -> AppStore:
+    """The isolated store of a workspace. Raises ValueError for unknown workspaces."""
+    if workspace not in _stores:
+        raise ValueError(f"Unknown workspace '{workspace}'. Valid: {', '.join(WORKSPACES)}")
+    if workspace == DEFAULT_WORKSPACE:
+        return store
+    return _stores[workspace]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -10,7 +11,14 @@ from fastapi.responses import FileResponse, Response
 
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
-from app.core.store import store
+from app.core.store import (
+    DEFAULT_WORKSPACE,
+    WORKSPACES,
+    AppStore,
+    get_store,
+    is_valid_workspace,
+    store,
+)
 from app.ingestion.service import (
     clear_all_documents,
     ingest_pdf_file,
@@ -25,22 +33,36 @@ setup_logging()
 logger = get_logger(__name__)
 
 
+def _ws(workspace: str) -> AppStore:
+    """Resolve a workspace name to its isolated store (400 on unknown). The bank_official store is read from
+    this module's `store` global at call time. All workspaces share the same singleton ML models."""
+    if not is_valid_workspace(workspace):
+        raise HTTPException(status_code=400, detail=f"Unknown workspace '{workspace}'. Valid: {', '.join(WORKSPACES)}")
+    return store if workspace == DEFAULT_WORKSPACE else get_store(workspace)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.data_path.mkdir(parents=True, exist_ok=True)
     settings.index_path.mkdir(parents=True, exist_ok=True)
     settings.sample_path.mkdir(parents=True, exist_ok=True)
     settings.report_path.mkdir(parents=True, exist_ok=True)
-    # Load persisted index if present
-    loaded = store.load(settings.index_path)
-    if loaded:
-        logger.info("Loaded persisted index: %s docs, %s chunks", len(store.documents), len(store.chunks))
+    # Load each workspace's persisted index (bank_official also accepts the legacy flat data/index/ layout)
+    to_warm: list[AppStore] = []
+    for ws in WORKSPACES:
+        st = _ws(ws)
+        loaded = st.load(settings.index_path_for(ws)) or (ws == DEFAULT_WORKSPACE and st.load(settings.index_path))
+        if loaded:
+            logger.info("[%s] Loaded persisted index: %s docs, %s chunks", ws, len(st.documents), len(st.chunks))
+            to_warm.append(st)
 
-        async def _warm() -> None:  # embed in the background so the API binds immediately
-            try:
-                await asyncio.to_thread(rebuild_runtime_index)
-            except Exception as e:
-                logger.warning("Failed to rebuild runtime index on startup: %s", e)
+    if to_warm:
+        async def _warm() -> None:  # embed in the background (one workspace at a time) so the API binds immediately
+            for st in to_warm:
+                try:
+                    await asyncio.to_thread(rebuild_runtime_index, None, st)
+                except Exception as e:
+                    logger.warning("[%s] Failed to rebuild runtime index on startup: %s", st.workspace, e)
 
         asyncio.create_task(_warm())
     yield
@@ -77,62 +99,94 @@ async def health() -> dict[str, Any]:
         "nli_model": settings.nli_model,
         "indexed_docs": len(store.documents),
         "indexed_chunks": len(store.chunks),
+        "workspaces": {ws: {"docs": len(_ws(ws).documents), "chunks": len(_ws(ws).chunks)} for ws in WORKSPACES},
     }
 
 
-def _corpus_summary() -> dict[str, Any]:
+def _corpus_summary(st: AppStore | None = None) -> dict[str, Any]:
     from app.amendments.graph import superseded_doc_ids
 
+    st = st if st is not None else store
     return {
-        "documents": len(store.documents),
-        "pages": sum(d.num_pages for d in store.documents.values()),
-        "chunks": len(store.chunks),
-        "table_chunks": sum(1 for c in store.chunks.values() if c.chunk_type == "table"),
-        "sentences": len(store.sentence_index),
-        "amendment_edges": len(store.amendment_edges),
-        "superseded_docs": len(superseded_doc_ids(store.amendment_edges)),
-        "indexed": store.embeddings is not None,
+        "workspace": st.workspace,
+        "documents": len(st.documents),
+        "pages": sum(d.num_pages for d in st.documents.values()),
+        "chunks": len(st.chunks),
+        "table_chunks": sum(1 for c in st.chunks.values() if c.chunk_type == "table"),
+        "sentences": len(st.sentence_index),
+        "amendment_edges": len(st.amendment_edges),
+        "superseded_docs": len(superseded_doc_ids(st.amendment_edges)),
+        "indexed": st.embeddings is not None,
     }
 
 
-def _persist_after_change() -> None:
+def _persist_after_change(st: AppStore | None = None) -> None:
+    st = st if st is not None else store
     try:
-        rebuild_runtime_index()
-        store.save(settings.index_path)
+        rebuild_runtime_index(app_store=st)
+        st.save(settings.index_path_for(st.workspace))
     except Exception as e:
-        logger.warning("Index rebuild/save failed: %s", e)
+        logger.warning("[%s] Index rebuild/save failed: %s", st.workspace, e)
+
+
+@app.get("/api/workspaces/summary")
+async def workspaces_summary() -> dict[str, Any]:
+    """Per-workspace compliance health: documents, chunks, amendment chains and unresolved contradictions.
+    Deterministic (typed-value comparison + amendment graph); no model is loaded for it."""
+    from app.amendments.graph import build_amendment_chains
+    from app.contradictions.detector import scan_corpus_contradictions
+
+    out: dict[str, Any] = {}
+    for ws in WORKSPACES:
+        st = _ws(ws)
+        names = {d.doc_id: d.doc_name for d in st.documents.values()}
+        found = scan_corpus_contradictions(st, nli_provider=None)
+        out[ws] = {
+            "doc_count": len(st.documents),
+            "chunk_count": len(st.chunks),
+            "amendment_chains_count": len(build_amendment_chains(st.amendment_edges, names)),
+            "unresolved_contradictions_count": len(found),
+            "contradiction_subjects": sorted({c.subject for c in found}),
+            "doc_names": [d.doc_name for d in st.documents.values()],
+        }
+    return {"workspaces": out}
 
 
 @app.delete("/api/documents/{doc_id}")
-async def delete_document(doc_id: str) -> dict[str, Any]:
+async def delete_document(doc_id: str, workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
     """Remove one document: its chunks, sentences and amendment edges; rebuild and persist the index."""
-    doc = store.documents.get(doc_id)
+    st = _ws(workspace)
+    doc = st.documents.get(doc_id)
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
-    remove_document(doc_id)
-    _persist_after_change()
-    return {"deleted": doc_id, "doc_name": doc.doc_name, "summary": _corpus_summary()}
+    remove_document(doc_id, st)
+    _persist_after_change(st)
+    return {"deleted": doc_id, "doc_name": doc.doc_name, "summary": _corpus_summary(st)}
 
 
 @app.delete("/api/documents")
-async def clear_corpus() -> dict[str, Any]:
-    """Clear the whole corpus (documents, chunks, edges, vectors) and persist the empty index."""
-    n = len(store.documents)
-    clear_all_documents()
-    _persist_after_change()
-    return {"deleted_documents": n, "summary": _corpus_summary()}
+async def clear_corpus(workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
+    """Clear one workspace (documents, chunks, edges, vectors) and persist the empty index."""
+    st = _ws(workspace)
+    n = len(st.documents)
+    clear_all_documents(st)
+    _persist_after_change(st)
+    return {"deleted_documents": n, "summary": _corpus_summary(st)}
 
 
 @app.get("/api/documents")
-async def list_documents() -> dict[str, Any]:
-    return {"documents": [d.model_dump() for d in store.documents.values()], "summary": _corpus_summary()}
+async def list_documents(workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
+    st = _ws(workspace)
+    return {"workspace": workspace, "documents": [d.model_dump() for d in st.documents.values()], "summary": _corpus_summary(st)}
 
 
 @app.api_route("/api/documents/{doc_id}/page/{page}/render", methods=["GET", "POST"])
-async def render_document_page(doc_id: str, page: int, sentence_id: str | None = None, bbox: str | None = None):
+async def render_document_page(doc_id: str, page: int, sentence_id: str | None = None, bbox: str | None = None,
+                               workspace: str = DEFAULT_WORKSPACE):
     """Render a PDF page as PNG. With `sentence_id` (or `bbox=x0,y0,x1,y1` in PDF points) the exact
     passage is highlighted in translucent yellow with an amber border."""
-    doc = store.documents.get(doc_id)
+    st = _ws(workspace)
+    doc = st.documents.get(doc_id)
     if doc is None:
         raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
     if page < 1 or page > doc.num_pages:
@@ -140,7 +194,7 @@ async def render_document_page(doc_id: str, page: int, sentence_id: str | None =
     rects: list[tuple[float, float, float, float]] = []
     pipe_cells: list[str] | None = None
     if sentence_id:
-        sent = store.get_sentence(sentence_id)
+        sent = st.get_sentence(sentence_id)
         if sent is None:
             raise HTTPException(status_code=404, detail=f"Sentence {sentence_id} not found")
         if sent["doc_id"] != doc_id:
@@ -183,45 +237,49 @@ async def render_document_page(doc_id: str, page: int, sentence_id: str | None =
 
 
 @app.post("/api/ingest")
-async def ingest(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+async def ingest(files: list[UploadFile] = File(...), workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
+    st = _ws(workspace)
     documents = []
     errors = []
     for f in files:
-        tmp_path = settings.data_path / "uploads" / (f.filename or "upload.pdf")
+        safe_name = Path(f.filename or "upload.pdf").name or "upload.pdf"  # never trust client path components
+        tmp_path = settings.uploads_path_for(workspace) / safe_name
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             content = await f.read()
             tmp_path.write_bytes(content)
-            doc = ingest_pdf_file(tmp_path, original_name=f.filename)
+            doc = ingest_pdf_file(tmp_path, original_name=safe_name, app_store=st)
             documents.append(doc.model_dump())
         except Exception as e:
             logger.exception("Ingest failed for %s", f.filename)
             errors.append({"doc_name": f.filename, "error": str(e)})
     try:
-        rebuild_runtime_index()
-        store.save(settings.index_path)
+        rebuild_runtime_index(app_store=st)
+        st.save(settings.index_path_for(workspace))
     except Exception as e:
         logger.warning("Index rebuild/save after ingest failed: %s", e)
-    return {"documents": documents, "errors": errors}
+    return {"workspace": workspace, "documents": documents, "errors": errors}
 
 
 @app.post("/api/ingest/samples")
-async def ingest_samples_endpoint() -> dict[str, Any]:
-    """Reset the index and ingest the bundled 4-PDF demo corpus."""
-    documents, errors = ingest_samples(reset=True)
+async def ingest_samples_endpoint(workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
+    """Reset the workspace and ingest the bundled 4-PDF demo corpus."""
+    st = _ws(workspace)
+    documents, errors = ingest_samples(reset=True, app_store=st)
     warnings = [w for w in errors if w]
     try:
-        rebuild_runtime_index()
-        store.save(settings.index_path)
+        rebuild_runtime_index(app_store=st)
+        st.save(settings.index_path_for(workspace))
     except Exception as e:
         logger.exception("Index rebuild/save after sample ingest failed")
         warnings.append({"error": f"index rebuild failed: {e}"})
     return {
+        "workspace": workspace,
         "documents": [d.model_dump() for d in documents],
         "errors": warnings,
-        "total_chunks": len(store.chunks),
-        "table_chunks": sum(1 for c in store.chunks.values() if c.chunk_type == "table"),
-        "amendment_edges": [e.model_dump() for e in store.amendment_edges],
+        "total_chunks": len(st.chunks),
+        "table_chunks": sum(1 for c in st.chunks.values() if c.chunk_type == "table"),
+        "amendment_edges": [e.model_dump() for e in st.amendment_edges],
     }
 
 
@@ -235,6 +293,8 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             doc_ids=req.doc_ids,
             top_k=req.top_k,
             debug=req.debug,
+            app_store=_ws(req.workspace),
+            history=req.history,
         )
         data = resp.model_dump()
         data["explanation"] = {
@@ -250,6 +310,8 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             "calculation": data.get("calculation"),
         }
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Ask failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -265,6 +327,8 @@ async def explain(req: AskRequest) -> dict[str, Any]:
             doc_ids=req.doc_ids,
             top_k=req.top_k,
             debug=True,
+            app_store=_ws(req.workspace),
+            history=req.history,
         )
         data = resp.model_dump()
         data["explanation"] = {
@@ -280,6 +344,8 @@ async def explain(req: AskRequest) -> dict[str, Any]:
             "retrieval_debug": (data.get("debug") or {}).get("retrieval"),
         }
         return data
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Explain failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -294,7 +360,7 @@ async def retrieve_endpoint(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="question is required")
     doc_ids = payload.get("doc_ids")
     top_k = int(payload.get("top_k") or settings.hybrid_top_k)
-    result = retrieve(query=question, top_k=top_k, doc_ids=doc_ids)
+    result = retrieve(query=question, top_k=top_k, doc_ids=doc_ids, app_store=_ws(str(payload.get("workspace") or DEFAULT_WORKSPACE)))
     return result.model_dump()
 
 
@@ -356,7 +422,7 @@ def _claim_sources(c) -> str:
 
 
 @app.get("/api/contradictions")
-async def get_contradictions(doc_ids: str | None = None) -> dict[str, Any]:
+async def get_contradictions(doc_ids: str | None = None, workspace: str = DEFAULT_WORKSPACE) -> dict[str, Any]:
     """Corpus-wide, amendment-aware scan. Conflicts explained by the amendment graph (including
     transitive ones such as v1 vs v3) and superseded documents are excluded; headings and bare
     section numbers are never compared."""
@@ -369,5 +435,5 @@ async def get_contradictions(doc_ids: str | None = None) -> dict[str, Any]:
     except Exception as e:  # NLI is informational here; the typed-value check is deterministic
         logger.warning("NLI unavailable for /api/contradictions: %s", e)
         nli = None
-    found = scan_corpus_contradictions(store, nli_provider=nli, doc_ids=ids)
-    return {"contradictions": [c.model_dump() for c in found], "count": len(found)}
+    found = scan_corpus_contradictions(_ws(workspace), nli_provider=nli, doc_ids=ids)
+    return {"workspace": workspace, "contradictions": [c.model_dump() for c in found], "count": len(found)}

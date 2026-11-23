@@ -24,13 +24,24 @@ _AMEND_RE = re.compile(
 _CIRCULAR_RE = re.compile(r"circular\s+no\.?\s*:?\s*([A-Za-z0-9][A-Za-z0-9./_\-]*[A-Za-z0-9])", re.IGNORECASE)
 _MASTER_DIR_RE = re.compile(r"master\s+(?:direction|circular)\b[^,.;()\n]*?(?=\s+dated\b|\s+w\.e\.f|,|;|\(|\.\s|\.$|$)", re.IGNORECASE)
 _PASSIVE_RE = re.compile(r"\b(?:superseded|replaced|amended|overridden)\s+by\b", re.IGNORECASE)
+_DATE_ALT = (r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
+             r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|"
+             r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}")
 _EFFECTIVE_RE = re.compile(
-    r"(?:effective(?:\s+date)?|w\.e\.f\.?|with\s+effect\s+from|dated)\s*[:\-]?\s*"
-    r"(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
-    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|"
-    r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})",
-    re.IGNORECASE,
-)
+    r"(?:effective(?:\s+date)?|w\.e\.f\.?|with\s+effect\s+from|dated)\s*[:\-]?\s*(" + _DATE_ALT + ")", re.IGNORECASE)
+_FROM_DATE_RE = re.compile(r"(?:from|on\s+or\s+after|w\.e\.f\.?|with\s+effect\s+from)\s+(" + _DATE_ALT + ")", re.IGNORECASE)
+# Regulatory circular identifiers: "RBI/2023-24/102", "DoR.MCS.REC.61/01.01.001/2023-24"
+_RBI_REF_RE = re.compile(r"RBI/\d{4}-\d{2,4}/\d+", re.IGNORECASE)
+_DEPT_REF_RE = re.compile(r"[A-Za-z]+\.[A-Za-z]+\.[A-Za-z]+\.\d+/\d{2}\.\d{2}\.\d{3}/\d{4}-\d{2}")
+# "Reference is invited to RBI circular <REF> ..." and friends
+_REF_INTRO_RE = re.compile(
+    r"reference\s+is\s+invited|\brefer(?:ence)?\s+(?:is\s+)?(?:invited\s+)?to\b|in\s+continuation\s+of|"
+    r"in\s+partial\s+modification\s+of|\bvide\b|in\s+terms\s+of", re.IGNORECASE)
+# modification phrasing used by regulators when changing an earlier circular
+_MODIFY_RE = re.compile(
+    r"\bextend(?:s|ed)?\s+the\s+timeline\b|\bextended\b|\bmodified\b|in\s+partial\s+modification\s+of|"
+    r"\bstands?\s+amended\b|\bshall\s+be\s+substituted\b|\binstead\s+of\b", re.IGNORECASE)
+_MONTH_DATE_RE = re.compile(r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", re.IGNORECASE)
 _VERSION_REF_RE = re.compile(r"\b(?:v|version)\s*(\d+)\b", re.IGNORECASE)
 _SUBJECT_WORDS = ["interest rate", "late fee", "late payment", "penalty", "tenure", "eligibility", "grace period",
                   "coverage", "waiting period"]
@@ -39,12 +50,38 @@ _SUBJECT_WORDS = ["interest rate", "late fee", "late payment", "penalty", "tenur
 # ------------------------------------------------------------------------------------------
 # extraction
 # ------------------------------------------------------------------------------------------
-def extract_amendment_edges(chunks: list[Chunk], doc_name_by_id: dict[str, str]) -> list[AmendmentEdge]:
-    """One edge per amendment *sentence* (never a title/heading) that references another known document."""
+def extract_reference_ids(page_text: str) -> list[str]:
+    """A document's OWN regulatory reference ids from its page-1 text (aliases of the document node).
+
+    Only lines that are essentially just an id (+ date), i.e. the letterhead such as
+    'RBI/2023-24/102' / 'DoR.MCS.REC.61/01.01.001/2023-24 December 29, 2023', count as own ids; ids quoted
+    inside body sentences belong to *other* circulars and are ignored."""
+    out: list[str] = []
+    for line in (page_text or "").splitlines():
+        ids = [m.group(0) for rx in (_RBI_REF_RE, _DEPT_REF_RE) for m in rx.finditer(line)]
+        ids += [m.group(1) for m in _CIRCULAR_RE.finditer(line)]
+        if not ids:
+            continue
+        rest = line
+        for i in ids:
+            rest = rest.replace(i, " ")
+        rest = re.sub(r"\b(?:circular\s+no\.?|dated|dt\.?|date)\b", " ", _MONTH_DATE_RE.sub(" ", rest), flags=re.IGNORECASE)
+        if len(re.sub(r"[\W_]+", "", rest)) <= 12:  # letterhead line, not a sentence quoting another circular
+            out.extend(i for i in ids if i not in out)
+    return out
+
+
+def extract_amendment_edges(chunks: list[Chunk], doc_name_by_id: dict[str, str],
+                            doc_aliases: dict[str, set[str] | list[str]] | None = None) -> list[AmendmentEdge]:
+    """One edge per amendment *sentence* (never a title/heading) that references another known document.
+
+    `doc_aliases` maps doc_id -> the document's own regulatory ids (see `extract_reference_ids`)."""
     edges: list[AmendmentEdge] = []
     seen: set[tuple[str, str, str]] = set()
     doc_dates = _doc_effective_dates(chunks)
     doc_ids = _doc_identifiers(chunks)
+    for did, aliases in (doc_aliases or {}).items():
+        doc_ids.setdefault(did, set()).update(_norm(a) for a in aliases if a)
     for chunk in chunks:
         if chunk.chunk_type == "table":
             continue
@@ -79,7 +116,58 @@ def extract_amendment_edges(chunks: list[Chunk], doc_name_by_id: dict[str, str])
                     evidence_quote=sent.text,
                     confidence=0.9,
                 ))
+    edges.extend(_regulatory_modification_edges(chunks, doc_name_by_id, doc_ids, doc_dates, seen))
     return edges
+
+
+def _ref_targets(text: str, own_id: str, doc_ids: dict[str, set[str]]) -> list[str]:
+    refs = {_norm(m.group(0)) for rx in (_RBI_REF_RE, _DEPT_REF_RE) for m in rx.finditer(text)}
+    refs |= {_norm(m.group(1)) for m in _CIRCULAR_RE.finditer(text)}
+    refs.discard("")
+    return [d for d, ids in doc_ids.items() if d != own_id and refs & ids]
+
+
+def _regulatory_modification_edges(chunks, doc_name_by_id, doc_ids, doc_dates, seen) -> list[AmendmentEdge]:
+    """'Reference is invited to RBI circular <REF> ...' + modification phrasing ('extend the timeline',
+    'in partial modification of', 'shall be substituted', ...) => newer circular AMENDS the referenced one.
+
+    The reference line of a letter is often a (bold) heading, which only survives as `chunk.section`, so
+    headings are read as context units; the quoted evidence is always a stored sentence."""
+    by_doc: dict[str, list[tuple[str, object | None, Chunk]]] = {}
+    heads: dict[str, set[str]] = {}
+    for ch in chunks:
+        if ch.chunk_type == "table":
+            continue
+        units = by_doc.setdefault(ch.doc_id, [])
+        for head in (ch.section, ch.section_context):
+            if head and head not in heads.setdefault(ch.doc_id, set()):
+                heads[ch.doc_id].add(head)
+                units.append((head, None, ch))
+        units.extend((s.text, s, ch) for s in ch.sentences)
+
+    out: list[AmendmentEdge] = []
+    for doc_id, units in by_doc.items():
+        refs = [(i, t) for i, (text, _s, _c) in enumerate(units) if _REF_INTRO_RE.search(text)
+                for t in _ref_targets(text, doc_id, doc_ids)]
+        for i, (text, sent, ch) in enumerate(units):
+            if sent is None or not _MODIFY_RE.search(text):
+                continue
+            near = [t for j, t in refs if j <= i and i - j <= 25]
+            if not near:
+                continue
+            older, relation = near[-1], _relation(text)
+            if (doc_id, older, relation) in seen or any((older, doc_id, r) in seen for r in ("AMENDS", "SUPERSEDES", "REPLACES")):
+                continue
+            seen.add((doc_id, older, relation))
+            after = " ".join(u[0] for u in units[i:i + 8] if u[1] is not None)
+            m = _FROM_DATE_RE.search(after)
+            out.append(AmendmentEdge(
+                edge_id=f"ame_{uuid.uuid4().hex[:8]}", from_doc_id=doc_id, from_doc_name=doc_name_by_id.get(doc_id, doc_id),
+                to_doc_id=older, to_doc_name=doc_name_by_id.get(older, older), relation=relation,
+                effective_date=(_extract_date(f"effective {m.group(1)}") if m else None) or _extract_date(text) or doc_dates.get(doc_id),
+                change_subject=_guess_subject(text), evidence_chunk_id=ch.chunk_id,
+                evidence_sentence_id=sent.sentence_id, evidence_page=ch.page, evidence_quote=sent.text, confidence=0.85))
+    return out
 
 
 def _norm(s: str) -> str:

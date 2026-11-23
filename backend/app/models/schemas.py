@@ -53,6 +53,7 @@ class Document(BaseModel):
     ingested_at: str
     chunks_created: int = 0
     checksum: str | None = None
+    aliases: list[str] = Field(default_factory=list)  # own regulatory ids, e.g. DoR.MCS.REC.61/01.01.001/2023-24
 
 
 class RetrievedChunk(BaseModel):
@@ -222,11 +223,37 @@ class PipelineTrace(BaseModel):
     gate4_lineage_and_conflicts: Gate4Trace = Field(default_factory=Gate4Trace)
 
 
+class ChatTurn(BaseModel):
+    """One earlier exchange. Used ONLY to resolve follow-ups / fill calculation slots — never as evidence."""
+    role: Literal["user", "assistant"] = "user"
+    question: str = ""
+    answer_summary: str = ""
+    pending_calculation: dict | None = None
+
+
+class MissingField(BaseModel):
+    key: str
+    label: str
+    placeholder: str = ""
+
+
+class ClarificationNeeded(BaseModel):
+    """Returned instead of a guess when a calculation lacks user-supplied inputs."""
+    kind: Literal["calculation_inputs"] = "calculation_inputs"
+    message: str
+    missing_fields: list[MissingField] = Field(default_factory=list)
+    base_question: str
+    # Echo this verbatim as `pending_calculation` of the ChatTurn on the next request.
+    pending_calculation: dict = Field(default_factory=dict)
+
+
 class AskRequest(BaseModel):
     question: str
     doc_ids: list[str] | None = None
     top_k: int | None = None
     debug: bool = False
+    workspace: str = "bank_official"
+    history: list[ChatTurn] = Field(default_factory=list)
 
 
 class AskResponse(BaseModel):
@@ -252,6 +279,9 @@ class AskResponse(BaseModel):
     confidence: float | None = None
     confidence_breakdown: dict[str, float] | None = None
     debug: dict | None = None
+    workspace: str = "bank_official"
+    rewritten_question: str | None = None
+    clarification_needed: ClarificationNeeded | None = None
 
 
 class IngestResponse(BaseModel):

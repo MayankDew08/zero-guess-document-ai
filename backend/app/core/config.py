@@ -32,7 +32,7 @@ class Settings:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct")
     ollama_fallback_model: str = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5:3b-instruct")
     llm_temperature: float = _float("LLM_TEMPERATURE", 0.0)
-    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 512)
+    llm_max_tokens: int = _int("LLM_MAX_TOKENS", 1024)
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 120)
     llm_keep_alive: str = os.getenv("LLM_KEEP_ALIVE", "15m")
     llm_num_ctx: int = _int("LLM_NUM_CTX", 4096)
@@ -96,6 +96,18 @@ class Settings:
     @property
     def index_path(self) -> Path:
         return self.resolve_path(self.index_dir)
+
+    def index_path_for(self, workspace: str) -> Path:
+        """Per-workspace on-disk index: data/index/<workspace>/."""
+        return self.index_path / workspace
+
+    def documents_path_for(self, workspace: str) -> Path:
+        """Per-workspace PDF copies. The official corpus keeps the legacy data/documents/ location."""
+        base = self.data_path / "documents"
+        return base if workspace == "bank_official" else base / workspace
+
+    def uploads_path_for(self, workspace: str) -> Path:
+        return self.data_path / "uploads" / workspace
 
     @property
     def sample_path(self) -> Path:

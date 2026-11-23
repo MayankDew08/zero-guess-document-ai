@@ -16,6 +16,12 @@ class LLMProvider(Protocol):
     def generate_json(self, prompt: str) -> dict[str, Any]: ...
 
 
+CONCISE_RETRY_SUFFIX = (
+    "\n\nIMPORTANT: your previous answer was cut off. Answer again with AT MOST 4 claims, each claim under 25 words, "
+    "citing only the most relevant sentences. Output complete, valid JSON only."
+)
+
+
 class OllamaLLMProvider:
     def __init__(self, model: str | None = None, base_url: str | None = None):
         self.model = model or settings.ollama_model
@@ -30,6 +36,10 @@ class OllamaLLMProvider:
             return False
 
     def generate_json(self, prompt: str) -> dict[str, Any]:
+        return self.generate_json_limited(prompt, max_tokens=None)
+
+    def generate_json_limited(self, prompt: str, max_tokens: int | None = None) -> dict[str, Any]:
+        """Same call with an output-token cap (used by the tiny follow-up rewriter: 64 tokens, temperature 0)."""
         # temperature 0.0 / num_ctx 4096 / num_predict 512 / keep_alive 15m / timeout 120s by default
         payload = {
             "model": self.model,
@@ -38,9 +48,9 @@ class OllamaLLMProvider:
             "format": "json",
             "keep_alive": settings.llm_keep_alive,
             "options": {
-                "temperature": settings.llm_temperature,
+                "temperature": 0.0 if max_tokens else settings.llm_temperature,
                 "num_ctx": settings.llm_num_ctx,
-                "num_predict": settings.llm_max_tokens,
+                "num_predict": max_tokens or settings.llm_max_tokens,
             },
         }
         timeout = httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
@@ -49,6 +59,16 @@ class OllamaLLMProvider:
             resp.raise_for_status()
             data = resp.json()
         raw = data.get("response", "")
+        obj = _try_parse_json(raw)
+        if obj is not None:
+            return obj
+        # Unparseable and nothing salvageable: ONE concise retry (the first answer was probably cut off).
+        logger.warning("LLM output unusable (%s chars); retrying once with a concise-output instruction", len(raw or ""))
+        payload["prompt"] = prompt + CONCISE_RETRY_SUFFIX
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(f"{self.base_url}/api/generate", json=payload)
+            resp.raise_for_status()
+            raw = resp.json().get("response", "")
         return _parse_json(raw)
 
 
@@ -84,27 +104,79 @@ class FakeLLMProvider:
             return {"claims": [], "missing_evidence": ["No relevant evidence found in prompt."]}
         return {"claims": claims, "missing_evidence": []}
 
-def _parse_json(raw: str) -> dict[str, Any]:
+def _try_parse_json(raw: str) -> dict[str, Any] | None:
+    """Strict parse, then first-object extraction, then truncated-array salvage. None if nothing usable."""
     raw = (raw or "").strip()
     if not raw:
-        return {"claims": [], "missing_evidence": ["Empty LLM response"]}
-    # Try direct parse
+        return None
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict):
             return obj
     except Exception:
         pass
-    # Try to extract first JSON object
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    start, end = raw.find("{"), raw.rfind("}")
+    if start != -1 and end > start:
         try:
             obj = json.loads(raw[start : end + 1])
             if isinstance(obj, dict):
                 return obj
         except Exception:
             pass
-    # Repair attempt: wrap in object
+    return salvage_truncated_claims(raw)
+
+
+def salvage_truncated_claims(raw: str) -> dict[str, Any] | None:
+    """Deterministic salvage of a claims array cut off mid-JSON (e.g. a missing closing ']}').
+
+    Returns every COMPLETE, individually valid claim object that has both claim text and source_ids; the
+    half-written last object is dropped. A partial answer is flagged so nothing is presented as complete."""
+    m = re.search(r'"claims"\s*:\s*\[', raw or "")
+    if not m:
+        return None
+    claims: list[dict[str, Any]] = []
+    depth, in_str, esc, obj_start = 0, False, False, -1
+    for i in range(m.end(), len(raw)):
+        ch = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                obj_start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and obj_start >= 0:
+                try:
+                    obj = json.loads(raw[obj_start : i + 1])
+                except Exception:
+                    obj = None
+                if isinstance(obj, dict) and str(obj.get("text") or obj.get("claim") or "").strip() \
+                        and (obj.get("source_ids") or obj.get("sources")):
+                    claims.append(obj)
+                obj_start = -1
+        elif ch == "]" and depth == 0:
+            break
+    if not claims:
+        return None
+    logger.warning("Salvaged %s complete claim(s) from truncated LLM JSON", len(claims))
+    return {"claims": claims, "salvaged_truncated": True,
+            "missing_evidence": ["The model output was cut off; only complete claims were kept, so this answer may be incomplete."]}
+
+
+def _parse_json(raw: str) -> dict[str, Any]:
+    obj = _try_parse_json(raw)
+    if obj is not None:
+        return obj
+    if not (raw or "").strip():
+        return {"claims": [], "missing_evidence": ["Empty LLM response"]}
     logger.warning("Failed to parse LLM JSON; returning empty claims")
     return {"claims": [], "missing_evidence": ["LLM returned invalid JSON"]}
