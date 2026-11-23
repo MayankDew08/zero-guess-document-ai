@@ -13,19 +13,23 @@ class RerankerProvider(Protocol):
 
 
 class CrossEncoderRerankerProvider:
-    _instance: "CrossEncoderRerankerProvider | None" = None
+    _instance: CrossEncoderRerankerProvider | None = None
     _model_name: str | None = None
+    _device: str | None = None
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(self, model_name: str | None = None, device: str | None = None):
         self.model_name = model_name or settings.reranker_model
+        self.device = device or settings.reranker_device
         self._model = None
 
     @classmethod
-    def get_instance(cls) -> "CrossEncoderRerankerProvider":
+    def get_instance(cls) -> CrossEncoderRerankerProvider:
         model_name = settings.reranker_model
-        if cls._instance is None or cls._model_name != model_name:
-            cls._instance = cls(model_name=model_name)
+        device = settings.reranker_device
+        if cls._instance is None or cls._model_name != model_name or cls._device != device:
+            cls._instance = cls(model_name=model_name, device=device)
             cls._model_name = model_name
+            cls._device = device
         return cls._instance
 
     def _load(self):
@@ -34,15 +38,20 @@ class CrossEncoderRerankerProvider:
         import torch
         from sentence_transformers import CrossEncoder
 
-        logger.info("Loading reranker model %s", self.model_name)
+        logger.info("Loading reranker model %s on %s", self.model_name, self.device)
         model_kwargs = {}
-        if settings.use_fp16 and torch.cuda.is_available():
+        # fp16 only when explicitly placed on CUDA; default CPU keeps VRAM free for Ollama.
+        if str(self.device).startswith("cuda") and settings.use_fp16 and torch.cuda.is_available():
             model_kwargs["torch_dtype"] = torch.float16
         try:
-            self._model = CrossEncoder(self.model_name, model_kwargs=model_kwargs, trust_remote_code=False)
+            self._model = CrossEncoder(
+                self.model_name,
+                device=self.device,
+                model_kwargs=model_kwargs,
+                trust_remote_code=False,
+            )
         except Exception:
-            self._model = CrossEncoder(self.model_name, trust_remote_code=False)
-        # fp16 on CPU is not always supported; keep safe.
+            self._model = CrossEncoder(self.model_name, device=self.device, trust_remote_code=False)
 
     def rerank(self, query: str, texts: list[str]) -> list[float]:
         if not texts:

@@ -45,3 +45,8 @@ export async function createReport(response: AskResponse) {
 export function reportDownloadUrl(reportId: string) {
   return `${BASE}/api/report/${reportId}/download`;
 }
+
+export function renderUrl(docId: string, page: number, sentenceId?: string) {
+  const q = sentenceId ? `?sentence_id=${encodeURIComponent(sentenceId)}` : '';
+  return `${BASE}/api/documents/${encodeURIComponent(docId)}/page/${page}/render${q}`;
+}

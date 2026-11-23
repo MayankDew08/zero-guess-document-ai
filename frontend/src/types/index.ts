@@ -32,10 +32,22 @@ export interface Contradiction {
   values: any[];
 }
 
+export interface Calculation {
+  kind: string;
+  formula: string;
+  inputs: Record<string, any>;
+  steps: string[];
+  result: string;
+  result_value: number;
+  citation?: Citation | null;
+  warnings: string[];
+}
+
 export interface AmendmentChain {
   chain_id: string;
   subject: string;
   doc_ids_ordered: string[];
+  doc_names_ordered?: string[];
   edges: any[];
   active_doc_id?: string | null;
   active_doc_name?: string | null;
@@ -56,6 +68,12 @@ export interface AskResponse {
   verified_sentences_count: number;
   total_shown_sentences: number;
   blocked_claims_count: number;
+  drafted_claims_count?: number;
+  draft_support_pct?: number | null;
   missing_evidence: string[];
+  calculation?: Calculation | null;
+  confidence?: number | null;
+  confidence_breakdown?: Record<string, number> | null;
+  explanation?: any;
   debug?: any;
 }

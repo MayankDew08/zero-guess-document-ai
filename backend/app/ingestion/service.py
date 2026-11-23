@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.amendments.graph import extract_amendment_edges
@@ -41,7 +41,7 @@ def ingest_pdf_file(path: str | Path, original_name: str | None = None) -> Docum
         doc_name=doc_name,
         file_path=str(dest),
         num_pages=len(pages),
-        ingested_at=datetime.now(timezone.utc).isoformat(),
+        ingested_at=datetime.now(UTC).isoformat(),
         chunks_created=len(chunks),
         checksum=stable_hash(f"{doc_name}:{path.stat().st_size if path.exists() else 0}", 16),
     )
@@ -50,6 +50,41 @@ def ingest_pdf_file(path: str | Path, original_name: str | None = None) -> Docum
     _rebuild_amendment_edges()
     logger.info("Ingested %s: %s pages, %s chunks", doc_name, doc.num_pages, doc.chunks_created)
     return doc
+
+
+def ingest_path(path: str | Path, original_name: str | None = None) -> list[Document]:
+    """Ingest a PDF file or all PDFs in a directory."""
+    path = Path(path)
+    if path.is_dir():
+        pdfs = sorted(path.glob("*.pdf"))
+        docs: list[Document] = []
+        for p in pdfs:
+            docs.append(ingest_pdf_file(p))
+        return docs
+    if path.is_file():
+        return [ingest_pdf_file(path, original_name=original_name)]
+    raise FileNotFoundError(f"Path not found: {path}")
+
+
+def ingest_samples(reset: bool = True) -> tuple[list[Document], list[dict[str, str]]]:
+    """Ingest all PDFs from the configured sample directory (clean slate by default)."""
+    if reset:
+        store.reset()
+    sample_dir = settings.sample_path
+    if not sample_dir.exists():
+        return [], [{"error": f"Sample directory not found: {sample_dir}"}]
+    pdfs = sorted(sample_dir.glob("*.pdf"))
+    if not pdfs:
+        return [], [{"error": "No sample PDFs found. Run scripts/generate_samples.py first."}]
+    documents: list[Document] = []
+    errors: list[dict[str, str]] = []
+    for p in pdfs:
+        try:
+            documents.append(ingest_pdf_file(p))
+        except Exception as e:
+            logger.exception("Sample ingest failed for %s", p.name)
+            errors.append({"doc_name": p.name, "error": str(e)})
+    return documents, errors
 
 
 def rebuild_runtime_index(embedding_provider=None) -> None:

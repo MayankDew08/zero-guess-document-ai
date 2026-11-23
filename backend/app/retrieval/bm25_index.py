@@ -4,8 +4,8 @@ import re
 
 from rank_bm25 import BM25Okapi
 
+from app.core.text import retrieval_text
 from app.models.schemas import Chunk
-
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9%₹$€£./:-]+")
 
@@ -18,7 +18,7 @@ class BM25Index:
     def __init__(self, chunks: list[Chunk]):
         self.chunks = chunks
         self.chunk_ids = [c.chunk_id for c in chunks]
-        corpus = [tokenize(c.text) for c in chunks]
+        corpus = [tokenize(retrieval_text(c)) for c in chunks]
         self.bm25 = BM25Okapi(corpus) if corpus else None
 
     def search(self, query: str, top_k: int = 12) -> list[tuple[str, float]]:

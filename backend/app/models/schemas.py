@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,7 @@ class RetrievedChunk(BaseModel):
     bm25_score: float | None = None
     rerank_score: float | None = None
     retrieval_rank: int = 0
+    via: str | None = None  # e.g. 'section_expansion:<chunk_id>' for multi-page clause continuations
 
 
 class RetrievalResult(BaseModel):
@@ -93,6 +94,7 @@ class DraftAnswer(BaseModel):
 
 
 class Claim(BaseModel):
+
     claim_id: str
     text: str
     claim_type: str = "factual"
@@ -100,6 +102,11 @@ class Claim(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     reason: str | None = None
+    numeric_verification: dict[str, Any] | None = None
+
+
+
+Claim.model_rebuild()
 
 
 class ContradictionValue(BaseModel):
@@ -146,6 +153,7 @@ class AmendmentChain(BaseModel):
     chain_id: str
     subject: str
     doc_ids_ordered: list[str] = Field(default_factory=list)
+    doc_names_ordered: list[str] = Field(default_factory=list)
     edges: list[AmendmentEdge] = Field(default_factory=list)
     active_doc_id: str | None = None
     active_doc_name: str | None = None
@@ -153,10 +161,22 @@ class AmendmentChain(BaseModel):
     status: Literal["resolved", "ambiguous", "unresolved"] = "resolved"
 
 
+class Calculation(BaseModel):
+    """Deterministic working for a fee/penalty/interest/EMI question (never LLM arithmetic)."""
+    kind: Literal["late_payment_fee", "interest", "emi"]
+    formula: str
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    steps: list[str] = Field(default_factory=list)
+    result: str
+    result_value: float
+    citation: Citation | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AskRequest(BaseModel):
     question: str
     doc_ids: list[str] | None = None
-    top_k: int = 8
+    top_k: int | None = None
     debug: bool = False
 
 
@@ -173,7 +193,12 @@ class AskResponse(BaseModel):
     verified_sentences_count: int = 0
     total_shown_sentences: int = 0
     blocked_claims_count: int = 0
+    drafted_claims_count: int = 0
+    draft_support_pct: float | None = None
     missing_evidence: list[str] = Field(default_factory=list)
+    calculation: Calculation | None = None
+    confidence: float | None = None
+    confidence_breakdown: dict[str, float] | None = None
     debug: dict | None = None
 
 

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
 from app.core.store import store
-from app.ingestion.service import ingest_pdf_file, rebuild_runtime_index
+from app.ingestion.service import ingest_pdf_file, ingest_samples, rebuild_runtime_index
 from app.models.schemas import AskRequest, AskResponse, ReportRequest, ReportResponse
 from app.qa.service import ask_question
 
@@ -29,10 +29,14 @@ async def lifespan(_: FastAPI):
     loaded = store.load(settings.index_path)
     if loaded:
         logger.info("Loaded persisted index: %s docs, %s chunks", len(store.documents), len(store.chunks))
-        try:
-            rebuild_runtime_index()
-        except Exception as e:
-            logger.warning("Failed to rebuild runtime index on startup: %s", e)
+
+        async def _warm() -> None:  # embed in the background so the API binds immediately
+            try:
+                await asyncio.to_thread(rebuild_runtime_index)
+            except Exception as e:
+                logger.warning("Failed to rebuild runtime index on startup: %s", e)
+
+        asyncio.create_task(_warm())
     yield
 
 
@@ -75,6 +79,51 @@ async def list_documents() -> dict[str, Any]:
     return {"documents": [d.model_dump() for d in store.documents.values()]}
 
 
+@app.api_route("/api/documents/{doc_id}/page/{page}/render", methods=["GET", "POST"])
+async def render_document_page(doc_id: str, page: int, sentence_id: str | None = None, bbox: str | None = None):
+    """Render a PDF page as PNG. With `sentence_id` (or `bbox=x0,y0,x1,y1` in PDF points) the exact
+    passage is highlighted in translucent yellow with an amber border."""
+    doc = store.documents.get(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
+    if page < 1 or page > doc.num_pages:
+        raise HTTPException(status_code=400, detail=f"Page {page} out of range (1-{doc.num_pages})")
+    rects: list[tuple[float, float, float, float]] = []
+    if sentence_id:
+        sent = store.get_sentence(sentence_id)
+        if sent is None:
+            raise HTTPException(status_code=404, detail=f"Sentence {sentence_id} not found")
+        if sent["doc_id"] != doc_id:
+            raise HTTPException(status_code=400, detail="sentence_id does not belong to this document")
+        page = int(sent["page"])
+        b = sent.get("bbox")
+        if b:
+            rects.append((b["x0"], b["y0"], b["x1"], b["y1"]))
+    if bbox:
+        try:
+            x0, y0, x1, y1 = (float(v) for v in bbox.split(","))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bbox must be 'x0,y0,x1,y1'")
+        rects.append((x0, y0, x1, y1))
+    try:
+        import pymupdf
+
+        pdf = pymupdf.open(doc.file_path)
+        try:
+            pg = pdf.load_page(page - 1)
+            for r in rects:
+                rect = pymupdf.Rect(r) + (-2, -1.5, 2, 1.5)
+                pg.draw_rect(rect, color=(0.96, 0.62, 0.04), fill=(1.0, 0.92, 0.23), fill_opacity=0.35,
+                             stroke_opacity=1.0, width=1.6)
+            png_bytes = pg.get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes("png")
+        finally:
+            pdf.close()
+    except Exception as e:
+        logger.exception("Page render failed")
+        raise HTTPException(status_code=500, detail=f"Failed to render page: {e}")
+    return Response(content=png_bytes, media_type="image/png")
+
+
 @app.post("/api/ingest")
 async def ingest(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     documents = []
@@ -99,28 +148,23 @@ async def ingest(files: list[UploadFile] = File(...)) -> dict[str, Any]:
 
 
 @app.post("/api/ingest/samples")
-async def ingest_samples() -> dict[str, Any]:
-    sample_dir = settings.sample_path
-    if not sample_dir.exists():
-        return {"documents": [], "errors": [{"error": f"Sample directory not found: {sample_dir}"}]}
-    pdfs = sorted(sample_dir.glob("*.pdf"))
-    if not pdfs:
-        return {"documents": [], "errors": [{"error": "No sample PDFs found. Run scripts/generate_samples.py first."}]}
-    documents = []
-    errors = []
-    for p in pdfs:
-        try:
-            doc = ingest_pdf_file(p)
-            documents.append(doc.model_dump())
-        except Exception as e:
-            logger.exception("Sample ingest failed for %s", p.name)
-            errors.append({"doc_name": p.name, "error": str(e)})
+async def ingest_samples_endpoint() -> dict[str, Any]:
+    """Reset the index and ingest the bundled 4-PDF demo corpus."""
+    documents, errors = ingest_samples(reset=True)
+    warnings = [w for w in errors if w]
     try:
         rebuild_runtime_index()
         store.save(settings.index_path)
     except Exception as e:
-        logger.warning("Index rebuild/save after sample ingest failed: %s", e)
-    return {"documents": documents, "errors": errors}
+        logger.exception("Index rebuild/save after sample ingest failed")
+        warnings.append({"error": f"index rebuild failed: {e}"})
+    return {
+        "documents": [d.model_dump() for d in documents],
+        "errors": warnings,
+        "total_chunks": len(store.chunks),
+        "table_chunks": sum(1 for c in store.chunks.values() if c.chunk_type == "table"),
+        "amendment_edges": [e.model_dump() for e in store.amendment_edges],
+    }
 
 
 @app.post("/api/ask")
@@ -134,9 +178,52 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             top_k=req.top_k,
             debug=req.debug,
         )
-        return resp.model_dump()
+        data = resp.model_dump()
+        data["explanation"] = {
+            "claim_verdicts": [
+                {"claim_id": c["claim_id"], "text": c["text"], "status": c["status"], "reason": c.get("reason"), "citations": c.get("citations", [])}
+                for c in data.get("claims", [])
+            ],
+            "blocked_claims": data.get("blocked_claims", []),
+            "contradictions": data.get("contradictions", []),
+            "amendment_chains": data.get("amendment_chains", []),
+            "confidence": data.get("confidence"),
+            "confidence_breakdown": data.get("confidence_breakdown"),
+            "calculation": data.get("calculation"),
+        }
+        return data
     except Exception as e:
         logger.exception("Ask failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/explain")
+async def explain(req: AskRequest) -> dict[str, Any]:
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="question is required")
+    try:
+        resp = ask_question(
+            question=req.question.strip(),
+            doc_ids=req.doc_ids,
+            top_k=req.top_k,
+            debug=True,
+        )
+        data = resp.model_dump()
+        data["explanation"] = {
+            "claim_verdicts": [
+                {"claim_id": c["claim_id"], "text": c["text"], "status": c["status"], "reason": c.get("reason"), "citations": c.get("citations", [])}
+                for c in data.get("claims", [])
+            ],
+            "blocked_claims": data.get("blocked_claims", []),
+            "contradictions": data.get("contradictions", []),
+            "amendment_chains": data.get("amendment_chains", []),
+            "confidence": data.get("confidence"),
+            "confidence_breakdown": data.get("confidence_breakdown"),
+            "retrieval_debug": (data.get("debug") or {}).get("retrieval"),
+        }
+        return data
+    except Exception as e:
+        logger.exception("Explain failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -228,3 +315,21 @@ def _claim_sources(c) -> str:
     if not c.citations:
         return "no citations"
     return "; ".join(f"{cit.doc_name} p.{cit.page}" for cit in c.citations)
+
+
+@app.get("/api/contradictions")
+async def get_contradictions(doc_ids: str | None = None) -> dict[str, Any]:
+    """Corpus-wide, amendment-aware scan. Conflicts explained by the amendment graph (including
+    transitive ones such as v1 vs v3) and superseded documents are excluded; headings and bare
+    section numbers are never compared."""
+    from app.contradictions.detector import scan_corpus_contradictions
+    from app.qa.service import _resolve_nli
+
+    ids = [d.strip() for d in doc_ids.split(",") if d.strip()] if doc_ids else None
+    try:
+        nli = _resolve_nli(None) if settings.enable_nli else None
+    except Exception as e:  # NLI is informational here; the typed-value check is deterministic
+        logger.warning("NLI unavailable for /api/contradictions: %s", e)
+        nli = None
+    found = scan_corpus_contradictions(store, nli_provider=nli, doc_ids=ids)
+    return {"contradictions": [c.model_dump() for c in found], "count": len(found)}

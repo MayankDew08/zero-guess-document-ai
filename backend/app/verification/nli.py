@@ -13,19 +13,23 @@ class NLIProvider(Protocol):
 
 
 class HFNLIProvider:
-    _instance: "HFNLIProvider | None" = None
+    _instance: HFNLIProvider | None = None
     _model_name: str | None = None
+    _device: str | None = None
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(self, model_name: str | None = None, device: str | None = None):
         self.model_name = model_name or settings.nli_model
+        self.device = device or settings.nli_device
         self._pipe = None
 
     @classmethod
-    def get_instance(cls) -> "HFNLIProvider":
+    def get_instance(cls) -> HFNLIProvider:
         model_name = settings.nli_model
-        if cls._instance is None or cls._model_name != model_name:
-            cls._instance = cls(model_name=model_name)
+        device = settings.nli_device
+        if cls._instance is None or cls._model_name != model_name or cls._device != device:
+            cls._instance = cls(model_name=model_name, device=device)
             cls._model_name = model_name
+            cls._device = device
         return cls._instance
 
     def _load(self):
@@ -34,11 +38,14 @@ class HFNLIProvider:
         import torch
         from transformers import pipeline
 
-        logger.info("Loading NLI model %s", self.model_name)
-        dtype = torch.float16 if settings.use_fp16 and torch.cuda.is_available() else None
+        logger.info("Loading NLI model %s on %s", self.model_name, self.device)
         kwargs = {"task": "text-classification", "model": self.model_name, "top_k": None}
-        if dtype is not None:
-            kwargs["torch_dtype"] = dtype
+        if str(self.device).startswith("cuda") and settings.use_fp16 and torch.cuda.is_available():
+            kwargs["torch_dtype"] = torch.float16
+            kwargs["device"] = 0
+        else:
+            # CPU or explicit non-cuda
+            kwargs["device"] = -1
         try:
             self._pipe = pipeline(**kwargs)
         except Exception:

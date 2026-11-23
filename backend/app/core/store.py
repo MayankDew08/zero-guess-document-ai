@@ -60,7 +60,7 @@ class AppStore:
 
     def save(self, index_dir: str | Path) -> None:
         path = Path(index_dir)
-        path.mkdir(parents=True, exist=True)
+        path.mkdir(parents=True, exist_ok=True)
         (path / "documents.json").write_text(
             json.dumps([d.model_dump() for d in self.documents.values()], ensure_ascii=False, indent=2),
             encoding="utf-8",

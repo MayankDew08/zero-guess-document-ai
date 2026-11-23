@@ -5,12 +5,26 @@ import numpy as np
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.store import AppStore, store
-from app.models.schemas import RetrievedChunk, RetrievalResult
+from app.core.text import retrieval_text
+from app.models.schemas import RetrievalResult, RetrievedChunk
 from app.retrieval.bm25_index import BM25Index
-from app.retrieval.embeddings import EmbeddingProvider, SentenceTransformerEmbeddingProvider
+from app.retrieval.embeddings import (
+    EmbeddingProvider,
+    FakeEmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
+)
 from app.retrieval.reranker import CrossEncoderRerankerProvider, RerankerProvider
 
 logger = get_logger(__name__)
+
+
+def resolve_embedding_provider(explicit: EmbeddingProvider | None = None) -> EmbeddingProvider:
+    """Injected provider (tests) > configured provider. Real bge-m3 by default; no silent mock fallback."""
+    if explicit is not None:
+        return explicit
+    if (settings.embedding_provider or "").lower() in {"mock", "fake", "hash"}:
+        return FakeEmbeddingProvider()
+    return SentenceTransformerEmbeddingProvider.get_instance()
 
 
 def build_index(app_store: AppStore = store, embedding_provider: EmbeddingProvider | None = None) -> None:
@@ -23,21 +37,8 @@ def build_index(app_store: AppStore = store, embedding_provider: EmbeddingProvid
         return
     app_store.bm25 = BM25Index(chunks)
     app_store.bm25_chunk_ids = [c.chunk_id for c in chunks]
-    provider = embedding_provider
-    if provider is None:
-        try:
-            provider = SentenceTransformerEmbeddingProvider.get_instance()
-        except Exception as e:
-            logger.warning("Embedding model unavailable, falling back to FakeEmbeddingProvider: %s", e)
-            from app.retrieval.embeddings import FakeEmbeddingProvider
-            provider = FakeEmbeddingProvider()
-    texts = [c.text for c in chunks]
-    try:
-        app_store.embeddings = provider.embed(texts)
-    except Exception as e:
-        logger.warning("Embedding failed, falling back to FakeEmbeddingProvider: %s", e)
-        from app.retrieval.embeddings import FakeEmbeddingProvider
-        app_store.embeddings = FakeEmbeddingProvider().embed(texts)
+    provider = resolve_embedding_provider(embedding_provider)
+    app_store.embeddings = provider.embed([retrieval_text(c) for c in chunks])
     app_store.embedding_chunk_ids = [c.chunk_id for c in chunks]
     logger.info("Built index for %s chunks", len(chunks))
 
@@ -79,8 +80,8 @@ def retrieve(
         filtered_store_chunks = chunks
         bm25 = BM25Index(filtered_store_chunks)
         bm25_ids = [c.chunk_id for c in filtered_store_chunks]
-        provider = embedding_provider or SentenceTransformerEmbeddingProvider.get_instance()
-        emb = provider.embed([c.text for c in filtered_store_chunks])
+        provider = resolve_embedding_provider(embedding_provider)
+        emb = provider.embed([retrieval_text(c) for c in filtered_store_chunks])
         emb_ids = bm25_ids
     else:
         bm25 = app_store.bm25
@@ -92,7 +93,7 @@ def retrieve(
     bm25_ranked = [cid for cid, _ in bm25_hits]
     bm25_scores = {cid: s for cid, s in bm25_hits}
 
-    provider = embedding_provider or SentenceTransformerEmbeddingProvider.get_instance()
+    provider = resolve_embedding_provider(embedding_provider)
     qvec = provider.embed([query])
     sem_hits = _cosine_search(qvec[0], emb, top_k=top_k) if len(qvec) else []
     sem_ranked = [emb_ids[i] for i, _ in sem_hits if i < len(emb_ids)]
@@ -121,31 +122,35 @@ def retrieve(
         )
 
     max_rerank = None
-    crag_passed = True
-    if apply_reranker and retrieved:
+    reranker_used = False
+    if settings.enable_reranker and apply_reranker and retrieved:
+        rp = (settings.reranker_provider or "none").lower()
         reranker = reranker_provider
-        if reranker is None:
-            try:
-                reranker = CrossEncoderRerankerProvider.get_instance()
-            except Exception as e:
-                logger.warning("Reranker unavailable, falling back to FakeRerankerProvider: %s", e)
-                from app.retrieval.reranker import FakeRerankerProvider
-                reranker = FakeRerankerProvider()
-        try:
-            scores = reranker.rerank(query, [r.chunk.text for r in retrieved])
-        except Exception as e:
-            logger.warning("Reranking failed, falling back to FakeRerankerProvider: %s", e)
-            from app.retrieval.reranker import FakeRerankerProvider
-            scores = FakeRerankerProvider().rerank(query, [r.chunk.text for r in retrieved])
-        for r, s in zip(retrieved, scores):
+        if reranker is None and rp not in {"none", "off", "disabled", "false"}:
+            reranker = CrossEncoderRerankerProvider.get_instance()
+        if reranker is not None:
+            reranker_used = True
+            scores = reranker.rerank(query, [retrieval_text(r.chunk) for r in retrieved])
+        else:
+            scores = [r.score for r in retrieved]
+        for r, s in zip(retrieved, scores, strict=False):
             r.rerank_score = float(s)
         retrieved.sort(key=lambda r: (r.rerank_score or 0.0), reverse=True)
         for i, r in enumerate(retrieved, start=1):
             r.retrieval_rank = i
         retrieved = retrieved[: settings.reranker_keep_top_n]
-        max_rerank = max((r.rerank_score or 0.0) for r in retrieved) if retrieved else 0.0
-        if apply_crag_gate:
+
+    max_rerank = max((r.rerank_score or 0.0) for r in retrieved) if retrieved else 0.0
+    if reranker_used:
+        retrieved = _expand_multipage_sections(retrieved, app_store, allowed_ids=set(c.chunk_id for c in chunks))
+    crag_passed = True
+    if apply_crag_gate:
+        rp_name = (settings.reranker_provider or "none").lower()
+        reranker_configured = rp_name not in {"none", "off", "disabled", "false"}
+        if reranker_used or reranker_configured:
             crag_passed = (max_rerank or 0.0) >= settings.rerank_abstain_threshold
+        else:
+            crag_passed = len(retrieved) > 0
 
     return RetrievalResult(
         query=query,
@@ -154,3 +159,25 @@ def retrieve(
         crag_passed=crag_passed,
         max_rerank_score=max_rerank,
     )
+
+
+def _expand_multipage_sections(retrieved: list[RetrievedChunk], app_store: AppStore, allowed_ids: set[str],
+                               look_at: int = 3, max_extra: int = 2) -> list[RetrievedChunk]:
+    """A clause that continues onto the next page shares its `section` with the retrieved chunk.
+    Pull those sibling chunks in (after the CRAG score is fixed) so the LLM sees the whole clause."""
+    have = {r.chunk.chunk_id for r in retrieved}
+    extra: list[RetrievedChunk] = []
+    for r in retrieved[:look_at]:
+        sec = r.chunk.section
+        if not sec or r.chunk.chunk_type == "table":
+            continue
+        for ch in app_store.all_chunks():
+            if len(extra) >= max_extra:
+                break
+            if (ch.chunk_id in have or ch.chunk_id not in allowed_ids or ch.doc_id != r.chunk.doc_id
+                    or ch.section != sec or ch.page == r.chunk.page):
+                continue
+            have.add(ch.chunk_id)
+            extra.append(RetrievedChunk(chunk=ch, score=0.0, rerank_score=None, retrieval_rank=len(retrieved) + len(extra) + 1,
+                                        via=f"section_expansion:{r.chunk.chunk_id}"))
+    return retrieved + extra

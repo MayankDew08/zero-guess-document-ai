@@ -1,119 +1,127 @@
+"""Amendment graph.
+
+Edge semantics: ``newer_doc --[SUPERSEDES | AMENDS | REPLACES]--> older_doc``.
+So v3 SUPERSEDES v2 and v2 SUPERSEDES v1; the chronological chain is v1 -> v2 -> v3 and the
+active document is the one with no incoming edge (nothing supersedes it).
+"""
 from __future__ import annotations
 
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import networkx as nx
 
 from app.models.schemas import AmendmentChain, AmendmentEdge, Chunk
 
-_AMEND_PATTERNS = [
-    re.compile(r"\b(amends?|supersedes?|replaces?|overrides?)\b", re.IGNORECASE),
-]
+_AMEND_RE = re.compile(r"\b(amends?|amended|supersedes?|superseded|replaces?|replaced|overrides?|overridden)\b", re.IGNORECASE)
+_PASSIVE_RE = re.compile(r"\b(?:superseded|replaced|amended|overridden)\s+by\b", re.IGNORECASE)
 _EFFECTIVE_RE = re.compile(
-    r"(?:effective|w\.e\.f\.?|with effect from)\s*[:\-]?\s*"
+    r"(?:effective(?:\s+date)?|w\.e\.f\.?|with\s+effect\s+from)\s*[:\-]?\s*"
     r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|"
     r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|"
     r"\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4})",
     re.IGNORECASE,
 )
-_DOC_REF_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*(?:[\s_-]+(?:v\d+|\d{4}|version\s*\d+|agreement|policy|amendment|addendum))[A-Za-z0-9_\s-]*)", re.IGNORECASE)
+_VERSION_REF_RE = re.compile(r"\b(?:v|version)\s*(\d+)\b", re.IGNORECASE)
+_SUBJECT_WORDS = ["interest rate", "late fee", "late payment", "penalty", "tenure", "eligibility", "grace period",
+                  "coverage", "waiting period"]
 
 
+# ------------------------------------------------------------------------------------------
+# extraction
+# ------------------------------------------------------------------------------------------
 def extract_amendment_edges(chunks: list[Chunk], doc_name_by_id: dict[str, str]) -> list[AmendmentEdge]:
+    """One edge per amendment *sentence* (never a title/heading) that references another known document."""
     edges: list[AmendmentEdge] = []
     seen: set[tuple[str, str, str]] = set()
+    doc_dates = _doc_effective_dates(chunks)
     for chunk in chunks:
-        text = chunk.text
-        if not any(p.search(text) for p in _AMEND_PATTERNS):
+        if chunk.chunk_type == "table":
             continue
-        relation = _relation(text)
-        effective_date = _extract_date(text)
-        refs = _extract_doc_refs(text)
-        from_doc_id = chunk.doc_id
-        from_doc_name = chunk.doc_name
-        # Heuristic: if the chunk references another known doc name/id, create edge from that doc to current doc.
-        for ref in refs:
-            to_doc_id = _match_doc(ref, doc_name_by_id)
-            if not to_doc_id or to_doc_id == from_doc_id:
+        for sent in chunk.sentences:
+            if not _AMEND_RE.search(sent.text):
                 continue
-            key = (to_doc_id, from_doc_id, relation)
-            if key in seen:
+            targets = _referenced_docs(sent.text, chunk.doc_id, doc_name_by_id)
+            if not targets:
                 continue
-            seen.add(key)
-            sentence_id = chunk.sentences[0].sentence_id if chunk.sentences else None
-            edges.append(
-                AmendmentEdge(
+            relation = _relation(sent.text)
+            passive = bool(_PASSIVE_RE.search(sent.text))
+            for ref_id in targets:
+                # Active voice: this (newer) doc acts on the referenced (older) doc.
+                # Passive ("v1 is superseded by v2"): the referenced doc is the newer one.
+                newer, older = (ref_id, chunk.doc_id) if passive else (chunk.doc_id, ref_id)
+                key = (newer, older, relation)
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append(AmendmentEdge(
                     edge_id=f"ame_{uuid.uuid4().hex[:8]}",
-                    from_doc_id=to_doc_id,
-                    from_doc_name=doc_name_by_id.get(to_doc_id, to_doc_id),
-                    to_doc_id=from_doc_id,
-                    to_doc_name=from_doc_name,
+                    from_doc_id=newer,
+                    from_doc_name=doc_name_by_id.get(newer, newer),
+                    to_doc_id=older,
+                    to_doc_name=doc_name_by_id.get(older, older),
                     relation=relation,
-                    effective_date=effective_date,
-                    change_subject=_guess_subject(chunk.text),
-                    old_value=None,
-                    new_value=None,
+                    effective_date=_extract_date(sent.text) or doc_dates.get(newer),
+                    change_subject=_guess_subject(sent.text),
                     evidence_chunk_id=chunk.chunk_id,
-                    evidence_sentence_id=sentence_id,
+                    evidence_sentence_id=sent.sentence_id,
                     evidence_page=chunk.page,
-                    evidence_quote=chunk.sentences[0].text if chunk.sentences else chunk.text[:300],
-                    confidence=0.8,
-                )
-            )
+                    evidence_quote=sent.text,
+                    confidence=0.9,
+                ))
     return edges
 
 
-def build_amendment_chains(edges: list[AmendmentEdge], doc_name_by_id: dict[str, str]) -> list[AmendmentChain]:
-    if not edges:
-        return []
-    g = nx.DiGraph()
-    for e in edges:
-        g.add_node(e.from_doc_id, name=doc_name_by_id.get(e.from_doc_id, e.from_doc_name))
-        g.add_node(e.to_doc_id, name=doc_name_by_id.get(e.to_doc_id, e.to_doc_name))
-        g.add_edge(e.from_doc_id, e.to_doc_id, edge=e)
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", re.sub(r"version", "v", s.lower()))
 
-    chains: list[AmendmentChain] = []
-    # Build chains from weakly connected components that are DAG-like.
-    for component in nx.weakly_connected_components(g):
-        sub = g.subgraph(component).copy()
-        comp_edges = [sub.edges[u, v]["edge"] for u, v in sub.edges]
-        if not comp_edges:
+
+def _family_version(name: str) -> tuple[str, int | None]:
+    stem = Path(name).stem
+    m = re.search(r"[\s_\-]*v(?:ersion)?[\s_\-]*(\d+)\s*$", stem, re.IGNORECASE)
+    if not m:
+        return _norm(stem), None
+    return _norm(stem[: m.start()]), int(m.group(1))
+
+
+def _referenced_docs(sentence: str, own_id: str, doc_name_by_id: dict[str, str]) -> list[str]:
+    sent_n = _norm(sentence)
+    found: list[str] = []
+    for doc_id, name in doc_name_by_id.items():
+        if doc_id == own_id:
             continue
-        # Determine ordering by effective date then topological if possible.
-        ordered = _order_nodes(sub, comp_edges)
-        status = "resolved"
-        if not nx.is_directed_acyclic_graph(sub):
-            status = "ambiguous"
-        active = ordered[-1] if ordered else None
-        subject = _common_subject(comp_edges) or "amended rule"
-        active_rule = None
-        for e in reversed(comp_edges):
-            if e.new_value:
-                active_rule = e.new_value
+        stem_n = _norm(Path(name).stem)
+        for m in re.finditer(re.escape(stem_n), sent_n):
+            if not sent_n[m.end(): m.end() + 1].isdigit():
+                found.append(doc_id)
                 break
-        chains.append(
-            AmendmentChain(
-                chain_id=f"chn_{uuid.uuid4().hex[:8]}",
-                subject=subject,
-                doc_ids_ordered=ordered,
-                edges=comp_edges,
-                active_doc_id=active,
-                active_doc_name=doc_name_by_id.get(active, active) if active else None,
-                active_rule=active_rule,
-                status=status,
-            )
-        )
-    return chains
+    if found:
+        return found
+    # bare "v2" / "version 2": resolve inside the current doc's family
+    own_family, _ = _family_version(doc_name_by_id.get(own_id, own_id))
+    for m in _VERSION_REF_RE.finditer(sentence):
+        want = int(m.group(1))
+        for doc_id, name in doc_name_by_id.items():
+            fam, ver = _family_version(name)
+            if doc_id != own_id and fam == own_family and ver == want and doc_id not in found:
+                found.append(doc_id)
+    return found
 
 
-def is_explained_by_amendment(doc_a: str, doc_b: str, edges: list[AmendmentEdge]) -> AmendmentEdge | None:
-    for e in edges:
-        pair = {e.from_doc_id, e.to_doc_id}
-        if {doc_a, doc_b} == pair:
-            return e
-    return None
+def _doc_effective_dates(chunks: list[Chunk]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for c in chunks:
+        if c.doc_id in out:
+            continue
+        for s in c.sentences:
+            if s.text.lower().startswith("effective date"):
+                d = _extract_date(s.text)
+                if d:
+                    out[c.doc_id] = d
+                    break
+    return out
 
 
 def _relation(text: str) -> str:
@@ -130,69 +138,98 @@ def _extract_date(text: str) -> str | None:
     if not m:
         return None
     raw = m.group(1).strip().replace(",", "")
-    fmts = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y",
-            "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"]
-    for fmt in fmts:
+    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y",
+                "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"]:
         try:
             return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-        except Exception:
+        except ValueError:
             pass
     return raw
 
 
-def _extract_doc_refs(text: str) -> list[str]:
-    refs = []
-    for m in _DOC_REF_RE.finditer(text):
-        refs.append(m.group(1).strip())
-    # also catch simple patterns like "Version 1", "v2"
-    for m in re.finditer(r"\b(v\d+|version\s*\d+)\b", text, re.IGNORECASE):
-        refs.append(m.group(1).strip())
-    return refs
-
-
-def _match_doc(ref: str, doc_name_by_id: dict[str, str]) -> str | None:
-    ref_norm = re.sub(r"[^a-z0-9]+", "", ref.lower())
-    if not ref_norm:
-        return None
-    for doc_id, name in doc_name_by_id.items():
-        name_norm = re.sub(r"[^a-z0-9]+", "", name.lower())
-        id_norm = re.sub(r"[^a-z0-9]+", "", doc_id.lower())
-        if ref_norm and (ref_norm in name_norm or ref_norm in id_norm or name_norm in ref_norm or id_norm in ref_norm):
-            # avoid overly broad matches
-            if len(ref_norm) >= 2:
-                return doc_id
-    return None
-
-
 def _guess_subject(text: str) -> str | None:
-    # crude heuristic for demo
-    for kw in ["interest rate", "late fee", "penalty", "tenure", "eligibility", "coverage", "waiting period"]:
-        if kw in text.lower():
-            return kw
-    return None
+    low = text.lower()
+    return next((kw for kw in _SUBJECT_WORDS if kw in low), None)
+
+
+# ------------------------------------------------------------------------------------------
+# graph queries
+# ------------------------------------------------------------------------------------------
+def _graph(edges: list[AmendmentEdge]) -> nx.DiGraph:
+    g = nx.DiGraph()
+    for e in edges:
+        g.add_edge(e.from_doc_id, e.to_doc_id, edge=e)
+    return g
+
+
+def is_amendment_pair(doc_a: str, doc_b: str, edges: list[AmendmentEdge]) -> bool:
+    """True when one doc (transitively) supersedes/amends the other, e.g. v3 -> v2 -> v1 makes
+    (v1, v3) an amendment pair even though they are two hops apart."""
+    if not doc_a or not doc_b or doc_a == doc_b:
+        return False
+    g = _graph(edges)
+    if doc_a not in g or doc_b not in g:
+        return False
+    return nx.has_path(g, doc_a, doc_b) or nx.has_path(g, doc_b, doc_a)
+
+
+def superseded_doc_ids(edges: list[AmendmentEdge]) -> set[str]:
+    """Docs that some newer doc supersedes/amends/replaces (they have an incoming edge)."""
+    return {e.to_doc_id for e in edges}
+
+
+def active_chain_doc_ids(edges: list[AmendmentEdge]) -> set[str]:
+    """Heads of amendment chains: they act on an older doc but nothing acts on them."""
+    return {e.from_doc_id for e in edges} - superseded_doc_ids(edges)
+
+
+# ------------------------------------------------------------------------------------------
+# chains
+# ------------------------------------------------------------------------------------------
+def build_amendment_chains(edges: list[AmendmentEdge], doc_name_by_id: dict[str, str]) -> list[AmendmentChain]:
+    if not edges:
+        return []
+    g = _graph(edges)
+    chains: list[AmendmentChain] = []
+    for comp in nx.weakly_connected_components(g):
+        sub = g.subgraph(comp)
+        sub_edges = [d["edge"] for _, _, d in sub.edges(data=True)]
+        actives = [n for n in comp if sub.in_degree(n) == 0]
+        active = _pick_active(actives, sub_edges)
+        ordered = _order_nodes(sub, sub_edges)
+        chains.append(AmendmentChain(
+            chain_id=f"chain_{uuid.uuid4().hex[:8]}",
+            subject=_common_subject(sub_edges) or "policy versions",
+            doc_ids_ordered=ordered,
+            doc_names_ordered=[doc_name_by_id.get(n, n) for n in ordered],
+            edges=sub_edges,
+            active_doc_id=active,
+            active_doc_name=doc_name_by_id.get(active, active) if active else None,
+            active_rule=None,
+            status="resolved" if len(actives) == 1 else "ambiguous",
+        ))
+    return chains
+
+
+def _pick_active(candidates: list[str], edges: list[AmendmentEdge]) -> str | None:
+    if not candidates:
+        return None
+
+    def score(doc_id: str):
+        dates = [e.effective_date for e in edges if e.from_doc_id == doc_id and e.effective_date]
+        m = re.search(r"v(?:ersion)?\s*(\d+)", doc_id, re.IGNORECASE)
+        return (max(dates) if dates else "", int(m.group(1)) if m else -1, doc_id)
+
+    return max(candidates, key=score)
 
 
 def _order_nodes(g: nx.DiGraph, edges: list[AmendmentEdge]) -> list[str]:
-    # Try topological order; fall back to effective date order.
-    try:
-        if nx.is_directed_acyclic_graph(g):
-            return list(nx.topological_sort(g))
-    except Exception:
-        pass
-    # effective date ordering
-    doc_dates: dict[str, str] = {}
-    for e in edges:
-        if e.effective_date:
-            doc_dates.setdefault(e.to_doc_id, e.effective_date)
-            doc_dates.setdefault(e.from_doc_id, doc_dates.get(e.from_doc_id, "9999-99-99"))
-    nodes = list(g.nodes)
-    nodes.sort(key=lambda n: doc_dates.get(n, "9999-99-99"))
-    return nodes
+    """Chronological, oldest -> newest (edges point newer -> older, so reverse topological order)."""
+    if nx.is_directed_acyclic_graph(g):
+        return list(reversed(list(nx.topological_sort(g))))
+    return sorted(g.nodes)
 
 
 def _common_subject(edges: list[AmendmentEdge]) -> str | None:
     subjects = [e.change_subject for e in edges if e.change_subject]
-    if not subjects:
-        return None
-    # most common
-    return max(set(subjects), key=subjects.count)
+    return max(set(subjects), key=subjects.count) if subjects else None

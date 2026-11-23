@@ -4,7 +4,6 @@ import re
 import unicodedata
 from hashlib import sha1
 
-
 _WHITESPACE_RE = re.compile(r"\s+")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'\(])")
 
@@ -55,3 +54,10 @@ def split_sentences(text: str) -> list[str]:
         else:
             merged.append(s)
     return merged
+
+
+def retrieval_text(chunk) -> str:
+    """Text used for BM25 / embeddings / reranking: doc name + section heading give context
+    (e.g. the heading of a clause that continues onto the next page) without altering quotes."""
+    head = " ".join(x for x in (f"[{chunk.doc_name}]", chunk.section or "") if x)
+    return f"{head}\n{chunk.text}"

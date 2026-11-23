@@ -58,9 +58,44 @@ def test_nli_and_numeric_gate_blocks_mismatch_claim():
     nli = FakeNLIProvider()
     drafts = [DraftClaim(claim_id="c1", text="The late payment fee is 5% per month.", claim_type="numeric", source_ids=["doc1_p1_c1#s0"])]
     shown, blocked = resolve_and_verify_claims(drafts, store, nli)
-    # should not be supported due to numeric mismatch or NLI contradiction
-    assert all(c.status != "supported" for c in shown)
-    assert len(blocked) == 1 or any(c.status in {"contradicted", "blocked"} for c in shown)
+    # contradicted / unsupported claims are BLOCKED, never shown
+    assert shown == []
+    assert len(blocked) == 1 and blocked[0].status == "blocked"
+    assert "contradicted_by_cited_evidence" in blocked[0].reason or "numeric_date_mismatch" in blocked[0].reason
+
+
+def _ask(store, claims):
+    return ask_question(
+        question="What is the late payment fee?",
+        app_store=store,
+        embedding_provider=FakeEmbeddingProvider(),
+        reranker_provider=FakeRerankerProvider(),
+        nli_provider=FakeNLIProvider(),
+        llm_provider=FakeLLMProvider(responses=[{"claims": claims, "missing_evidence": []}]),
+    )
+
+
+def test_contradicted_claim_never_leaks_into_answer():
+    resp = _ask(_make_store(), [
+        {"claim_id": "c1", "text": "The late payment fee is 2% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]},
+        {"claim_id": "c2", "text": "The late payment fee is 9% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]},
+    ])
+    assert [c.claim_id for c in resp.claims] == ["c1"]
+    assert all(c.status == "supported" for c in resp.claims)
+    assert [c.claim_id for c in resp.blocked_claims] == ["c2"]
+    assert resp.blocked_claims_count == 1
+    assert "9%" not in resp.answer
+    assert resp.faithfulness_pct == 100.0 and resp.draft_support_pct == 50.0
+    assert any("9%" in m for m in resp.missing_evidence)
+
+
+def test_all_claims_blocked_means_abstain_with_missing_evidence():
+    resp = _ask(_make_store(), [
+        {"claim_id": "c1", "text": "The late payment fee is 9% per month.", "claim_type": "numeric", "source_ids": ["doc1_p1_c1#s0"]},
+    ])
+    assert resp.status == "abstained" and resp.claims == []
+    assert resp.answer.startswith("I don't have proof")
+    assert resp.blocked_claims_count == 1 and resp.missing_evidence
 
 
 def test_crag_gate_abstains_below_threshold(monkeypatch):
@@ -125,6 +160,19 @@ def test_faithfulness_reports_blocked_claims(monkeypatch):
         ], "missing_evidence": []}]),
     )
     # The 10% claim must not be supported; it should be blocked or contradicted
-    assert resp.faithfulness_pct is not None
-    assert resp.verified_sentences_count <= 1
-    assert resp.blocked_claims_count >= 1 or any(c.status != "supported" for c in resp.claims + resp.blocked_claims)
+    assert resp.faithfulness_pct == 100.0
+    assert resp.verified_sentences_count == 1
+    assert resp.blocked_claims_count == 1
+
+
+def test_malformed_source_id_is_format_repaired_but_never_invented():
+    from app.verification.pipeline import repair_source_id
+
+    store = _make_store()
+    assert repair_source_id("doc1_p1_c1#0", store) == "doc1_p1_c1#s0"
+    assert repair_source_id("doc1_p1_c1#s0", store) == "doc1_p1_c1#s0"
+    assert repair_source_id("doc1_p1_c1#7", store) == "doc1_p1_c1#7"  # does not exist -> stays invalid
+    shown, blocked = resolve_and_verify_claims(
+        [DraftClaim(claim_id="c1", text="The late payment fee is 2% per month.", claim_type="numeric", source_ids=["doc1_p1_c1#0"])],
+        store, FakeNLIProvider())
+    assert len(shown) == 1 and shown[0].source_ids == ["doc1_p1_c1#s0"] and not blocked

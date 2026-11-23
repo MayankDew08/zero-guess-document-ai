@@ -15,8 +15,9 @@ class EmbeddingProvider(Protocol):
 
 
 class SentenceTransformerEmbeddingProvider:
-    _instance: "SentenceTransformerEmbeddingProvider | None" = None
+    _instance: SentenceTransformerEmbeddingProvider | None = None
     _model_name: str | None = None
+    _device: str | None = None
 
     def __init__(self, model_name: str | None = None, device: str | None = None):
         self.model_name = model_name or settings.embedding_model
@@ -24,11 +25,13 @@ class SentenceTransformerEmbeddingProvider:
         self._model = None
 
     @classmethod
-    def get_instance(cls) -> "SentenceTransformerEmbeddingProvider":
+    def get_instance(cls) -> SentenceTransformerEmbeddingProvider:
         model_name = settings.embedding_model
-        if cls._instance is None or cls._model_name != model_name:
-            cls._instance = cls(model_name=model_name)
+        device = settings.embedding_device
+        if cls._instance is None or cls._model_name != model_name or cls._device != device:
+            cls._instance = cls(model_name=model_name, device=device)
             cls._model_name = model_name
+            cls._device = device
         return cls._instance
 
     def _load(self):
