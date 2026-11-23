@@ -72,7 +72,41 @@ Settings live in `backend/.env` (`EMBEDDING_DEVICE=cpu`, `RERANKER_DEVICE=cpu`, 
 
 ¹ `contradicted` = the answer is verified (2%/month from the active v3) **and** an unresolved conflict exists (`Acme_Operations_Notice.pdf` says 5% / 5-day grace). ² The LLM drafted an extra claim that failed NLI/numeric verification and was blocked — never shown.
 
-`scripts/evaluate.py` (in-process, 7 cases with expected-outcome checks): **7/7 pass**, 16 drafted claims → 15 verified & shown, 1 blocked, **faithfulness of shown claims 100%**, draft support 93.8%, 0 false v1/v2-vs-v3 conflicts. Also verified live: table-row citation renders a highlighted PNG, HTML audit report contains every verbatim quote (claims, both sides of each contradiction, every amendment clause), `DELETE` single/all documents. Unit tests: **57 passing** (`pytest`).
+### Golden Evaluation Benchmark (24 labelled cases, reproducible)
+
+`data/eval/golden_dataset.json` holds 24 hand-labelled questions: Acme (v1→v2→v3 amendment chain, fee table, multi-page clause, Operations Notice contradiction, superseded negative controls, abstention, partial proof, calculation, missing-input clarification, Hindi), the real RBI circulars `DoR.MCS.REC.28/61/38`, and the Hackasol booklet (AIML-02 vs CS-01). Each case stores `expected_doc_ids`, `expected_pages`, `expected_status`, `expected_active_doc`, `expect_contradiction`, `expect_abstention`, `expected_value`. Gold labels come from the PDFs, never from model output.
+
+```bash
+python backend/scripts/evaluate.py --retrieval-only   # 4-way ablation, zero LLM calls
+python backend/scripts/evaluate.py --full             # real local models, Acme + RBI (add --corpora all for Hackasol)
+```
+Output: `data/reports/golden_eval_report.json` (+ `.md`). Real PDFs are read from `data/uploads/`; a corpus whose PDFs are missing is skipped with a warning.
+
+**Retrieval ablation** (21 answerable questions, top-5; relevant = chunk lies on a gold doc+page)
+
+| Retrieval mode | Recall@5 | Precision@5 | MRR@5 |
+|---|---|---|---|
+| (a) BM25 only | 90.5% | 45.7% | 0.770 |
+| (b) Dense `bge-m3` only | 95.2% | 53.3% | 0.853 |
+| (c) Hybrid RRF (`bge-m3` + BM25) | 92.9% | 49.5% | 0.821 |
+| **(d) Contextual hybrid + `bge-reranker-v2-m3` (ours)** | **95.2%** | 50.5% | **0.897** |
+
+The reranker's win is ranking quality (MRR), not recall: dense-only ties it on Recall@5 and has slightly higher Precision@5. Precision@5 is capped because gold is usually 1–2 pages while 5 chunks are returned.
+
+**End-to-end** (22 questions, Acme + RBI, qwen2.5:7b + bge-m3 + reranker + mDeBERTa, one in-process run)
+
+| Metric | Result |
+|---|---|
+| Faithfulness (shown sentences backed by a verified quote) | 100% (28/28) |
+| Hallucination leakage (independent audit, lower is better) | 3.6% (1/28) |
+| Citation exact-match (quote verbatim on cited PDF page, re-read with PyMuPDF) | 100% (30/30) |
+| Abstention accuracy | 90.9% (20/22) |
+| Contradiction precision / recall | 83.3% / 100% (TP 5, FP 1, FN 0) |
+| Superseded false-positive rate | 0% (0/7 negative controls) |
+| Amendment-resolution accuracy | 91.7% (11/12) |
+| Latency median / p95 | 33.2 s / 51.4 s |
+
+Known misses (not tuned away): GD-11 (home-loan interest question) answered with the *personal-loan* 7% rate instead of refusing — the 1 leaked claim; GD-16 (RBI fresh-loan date) falsely refused because NLI rated the claim neutral; GD-02 returned `partially_answered`. Gate 1 (CRAG threshold) refused 0/3 no-proof questions before generation; refusals came from Gates 2–4. Latencies were measured while another backend process shared the CPU, so treat them as an upper bound. Leakage counts a claim if it is uncited, its quote is absent from the PDF page, it contains a number absent from its quotes, contains a forbidden value, or is shown where the right answer is a refusal. Unit tests: **57 passing** (`pytest`).
 
 ## 60-second setup & demo
 
@@ -128,7 +162,8 @@ Amendment detection understands `supersedes / replaces / amends`, `in partial mo
 cd backend  && PYTHONPATH=. pytest -q && ruff check .
 cd frontend && npm run lint && npm run build
 python backend/scripts/live_e2e.py http://127.0.0.1:8000     # real models, 7 presets
-cd backend && python scripts/evaluate.py                     # real models, in-process
+python backend/scripts/evaluate.py --retrieval-only          # golden ablation
+python backend/scripts/evaluate.py --full                    # golden end-to-end, real models
 ```
 
 ## Project docs

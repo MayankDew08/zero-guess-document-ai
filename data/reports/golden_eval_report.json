@@ -1,0 +1,2694 @@
+{
+  "environment": {
+    "python": "3.14.10",
+    "platform": "Linux-7.3.4-100.fc43.x86_64-x86_64-with-glibc2.42",
+    "torch": "2.11.0+cu130",
+    "cuda_available": true,
+    "git_commit": "c11dcb2",
+    "models": {
+      "llm": "ollama:qwen2.5:7b-instruct",
+      "embedding": "BAAI/bge-m3",
+      "embedding_device": "cpu",
+      "reranker": "BAAI/bge-reranker-v2-m3",
+      "reranker_device": "cpu",
+      "nli": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
+      "nli_device": "cpu"
+    },
+    "thresholds": {
+      "rerank_abstain": 0.25,
+      "hybrid_top_k": 20,
+      "reranker_keep_top_n": 7
+    },
+    "dataset": {
+      "path": "data/eval/golden_dataset.json",
+      "sha256_16": "0aa14f691656a818",
+      "cases_total": 24
+    }
+  },
+  "retrieval_ablation": {
+    "generated_at": "2026-11-23T10:12:06+00:00",
+    "k": 5,
+    "corpora_evaluated": [
+      "acme",
+      "hackasol",
+      "rbi"
+    ],
+    "corpora_skipped": {},
+    "cases_total": 24,
+    "cases_scored": 21,
+    "relevance_rule": "a retrieved chunk is relevant iff its (doc_id, page) is a gold (doc_id, page) pair",
+    "metric_definitions": {
+      "recall_at_5": "share of gold (doc, page) pairs covered by the top-5 chunks",
+      "precision_at_5": "share of the top-5 chunks that lie on a gold (doc, page)",
+      "mrr_at_5": "mean reciprocal rank of the first relevant chunk within the top 5 (0 if none)"
+    },
+    "modes": {
+      "bm25": {
+        "label": "(a) BM25 only",
+        "n_cases": 21,
+        "recall_at_5": 0.9048,
+        "precision_at_5": 0.4571,
+        "mrr_at_5": 0.7698,
+        "by_corpus": {
+          "acme": {
+            "n_cases": 13,
+            "recall_at_5": 1.0,
+            "precision_at_5": 0.4462,
+            "mrr_at_5": 0.7949
+          },
+          "hackasol": {
+            "n_cases": 2,
+            "recall_at_5": 1.0,
+            "precision_at_5": 0.9,
+            "mrr_at_5": 1.0
+          },
+          "rbi": {
+            "n_cases": 6,
+            "recall_at_5": 0.6667,
+            "precision_at_5": 0.3333,
+            "mrr_at_5": 0.6389
+          }
+        }
+      },
+      "dense": {
+        "label": "(b) Dense bge-m3 only",
+        "n_cases": 21,
+        "recall_at_5": 0.9524,
+        "precision_at_5": 0.5333,
+        "mrr_at_5": 0.8532,
+        "by_corpus": {
+          "acme": {
+            "n_cases": 13,
+            "recall_at_5": 0.9615,
+            "precision_at_5": 0.4923,
+            "mrr_at_5": 0.8205
+          },
+          "hackasol": {
+            "n_cases": 2,
+            "recall_at_5": 1.0,
+            "precision_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "rbi": {
+            "n_cases": 6,
+            "recall_at_5": 0.9167,
+            "precision_at_5": 0.4667,
+            "mrr_at_5": 0.875
+          }
+        }
+      },
+      "hybrid_rrf": {
+        "label": "(c) Hybrid RRF (bge-m3 + BM25)",
+        "n_cases": 21,
+        "recall_at_5": 0.9286,
+        "precision_at_5": 0.4952,
+        "mrr_at_5": 0.8214,
+        "by_corpus": {
+          "acme": {
+            "n_cases": 13,
+            "recall_at_5": 0.9615,
+            "precision_at_5": 0.4615,
+            "mrr_at_5": 0.7692
+          },
+          "hackasol": {
+            "n_cases": 2,
+            "recall_at_5": 1.0,
+            "precision_at_5": 1.0,
+            "mrr_at_5": 1.0
+          },
+          "rbi": {
+            "n_cases": 6,
+            "recall_at_5": 0.8333,
+            "precision_at_5": 0.4,
+            "mrr_at_5": 0.875
+          }
+        }
+      },
+      "pipeline": {
+        "label": "(d) Contextual Hybrid + bge-reranker-v2-m3 (ours)",
+        "n_cases": 21,
+        "recall_at_5": 0.9524,
+        "precision_at_5": 0.5048,
+        "mrr_at_5": 0.8968,
+        "by_corpus": {
+          "acme": {
+            "n_cases": 13,
+            "recall_at_5": 1.0,
+            "precision_at_5": 0.4769,
+            "mrr_at_5": 0.9103
+          },
+          "hackasol": {
+            "n_cases": 2,
+            "recall_at_5": 1.0,
+            "precision_at_5": 0.8,
+            "mrr_at_5": 0.75
+          },
+          "rbi": {
+            "n_cases": 6,
+            "recall_at_5": 0.8333,
+            "precision_at_5": 0.4667,
+            "mrr_at_5": 0.9167
+          }
+        }
+      }
+    },
+    "gate1_abstention": {
+      "abstain_expected": 3,
+      "abstain_expected_caught": 0,
+      "answerable": 21,
+      "answerable_wrongly_abstained": 0,
+      "abstention_recall_pct": 0.0,
+      "false_abstention_pct": 0.0,
+      "note": "Gate 1 only (CRAG rerank threshold, before any LLM call). Cases that pass Gate 1 can still be refused at Gates 2-4; see --full."
+    },
+    "timing_s": {
+      "model_load_and_indexing": 105.4,
+      "queries_all_modes": 542.1,
+      "total": 647.5
+    },
+    "per_case": [
+      {
+        "id": "GD-01",
+        "corpus": "acme",
+        "category": "active_rule_amendment_chain",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.6504
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 0.5,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-02",
+        "corpus": "acme",
+        "category": "amendment_chain_lineage",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.5428
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.8,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-03",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7161
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p2"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.5,
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-04",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.682
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v1:p2"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p3"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 0.5,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-05",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7292
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v3:p3"
+          ]
+        }
+      },
+      {
+        "id": "GD-06",
+        "corpus": "acme",
+        "category": "contradiction_operations_notice",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.5995
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_operations_notice:p2",
+            "acme_loan_policy_v1:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-07",
+        "corpus": "acme",
+        "category": "contradiction_operations_notice",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7304
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-08",
+        "corpus": "acme",
+        "category": "multipage_table",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.6583
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v3:p2",
+            "acme_operations_notice:p2",
+            "acme_loan_policy_v1:p2"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p2"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p2"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p2"
+          ]
+        }
+      },
+      {
+        "id": "GD-09",
+        "corpus": "acme",
+        "category": "multipage_clause",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7269
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p2",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p2"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p3",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p2"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p3",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v3:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-10",
+        "corpus": "acme",
+        "category": "abstention_out_of_scope",
+        "scored": false,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.5015
+        },
+        "bm25": {
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p3"
+          ]
+        },
+        "dense": {
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "top5": [
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p2",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-11",
+        "corpus": "acme",
+        "category": "abstention_near_miss",
+        "scored": false,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7303
+        },
+        "bm25": {
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "dense": {
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p2"
+          ]
+        },
+        "hybrid_rrf": {
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-12",
+        "corpus": "acme",
+        "category": "partial_proof",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.6569
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v2:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-13",
+        "corpus": "acme",
+        "category": "deterministic_calculation",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.5256
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1"
+          ]
+        },
+        "dense": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v2:p2",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p2"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_operations_notice:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-14",
+        "corpus": "acme",
+        "category": "missing_input_clarification",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.6017
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 0.5,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_operations_notice:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-15",
+        "corpus": "acme",
+        "category": "hindi",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.642
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 0.333,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 0.5,
+          "top5": [
+            "acme_loan_policy_v1:p1",
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "acme_operations_notice:p1",
+            "acme_loan_policy_v3:p1",
+            "acme_loan_policy_v2:p1",
+            "acme_loan_policy_v1:p1",
+            "acme_loan_policy_v3:p1"
+          ]
+        }
+      },
+      {
+        "id": "GD-16",
+        "corpus": "rbi",
+        "category": "real_pdf_amendment_chain",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7307
+        },
+        "bm25": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p16"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p16",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p16",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p16",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p12"
+          ]
+        }
+      },
+      {
+        "id": "GD-17",
+        "corpus": "rbi",
+        "category": "real_pdf_amendment_chain",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7308
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 0.333,
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8",
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14"
+          ]
+        },
+        "pipeline": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 1.0,
+          "top5": [
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p16",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p14",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6"
+          ]
+        }
+      },
+      {
+        "id": "GD-18",
+        "corpus": "rbi",
+        "category": "real_pdf_multipage_clause",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7285
+        },
+        "bm25": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 0.5,
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p13",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p5",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p7",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p15"
+          ]
+        },
+        "dense": {
+          "recall": 0.5,
+          "precision": 0.4,
+          "rr": 0.25,
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p5",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p7",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p13",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 0.25,
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p5",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p13",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p7",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p11"
+          ]
+        },
+        "pipeline": {
+          "recall": 0.5,
+          "precision": 0.2,
+          "rr": 0.5,
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p7",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p15",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p5",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p11"
+          ]
+        }
+      },
+      {
+        "id": "GD-19",
+        "corpus": "rbi",
+        "category": "real_pdf_numeric",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7278
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.8,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.8,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        }
+      },
+      {
+        "id": "GD-20",
+        "corpus": "rbi",
+        "category": "real_pdf_numeric",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7306
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.4,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        }
+      },
+      {
+        "id": "GD-21",
+        "corpus": "rbi",
+        "category": "real_pdf_abstention",
+        "scored": false,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.5041
+        },
+        "bm25": {
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p4",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p6"
+          ]
+        },
+        "dense": {
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p4",
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p4",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p2"
+          ]
+        },
+        "pipeline": {
+          "top5": [
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p4",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p1",
+            "penalcharges26a3a63141764128942edba48a78a491:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "fairlendingpractice1b9dbe75410b4da881e6ef953304b6f7:p8"
+          ]
+        }
+      },
+      {
+        "id": "GD-22",
+        "corpus": "rbi",
+        "category": "hindi_real_pdf",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.723
+        },
+        "bm25": {
+          "recall": 0.0,
+          "precision": 0.0,
+          "rr": 0.0,
+          "top5": []
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.8,
+          "rr": 1.0,
+          "top5": [
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p1",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2",
+            "noti60936a9dfa85554dd1bf77bcf4611aa69d:p2"
+          ]
+        }
+      },
+      {
+        "id": "GD-23",
+        "corpus": "hackasol",
+        "category": "disambiguation_aiml02",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.7227
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 0.6,
+          "rr": 0.5,
+          "top5": [
+            "hackasol_5_0_problem_statement:p3",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p2",
+            "hackasol_5_0_problem_statement:p6",
+            "hackasol_5_0_problem_statement:p6"
+          ]
+        }
+      },
+      {
+        "id": "GD-24",
+        "corpus": "hackasol",
+        "category": "disambiguation_cs01",
+        "scored": true,
+        "gate1": {
+          "crag_passed": true,
+          "max_rerank_score": 0.6995
+        },
+        "bm25": {
+          "recall": 1.0,
+          "precision": 0.8,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p3",
+            "hackasol_5_0_problem_statement:p7"
+          ]
+        },
+        "dense": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7"
+          ]
+        },
+        "hybrid_rrf": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7"
+          ]
+        },
+        "pipeline": {
+          "recall": 1.0,
+          "precision": 1.0,
+          "rr": 1.0,
+          "top5": [
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7",
+            "hackasol_5_0_problem_statement:p7"
+          ]
+        }
+      }
+    ]
+  },
+  "full_pipeline": {
+    "generated_at": "2026-11-23T10:41:21+00:00",
+    "corpora_evaluated": [
+      "acme",
+      "rbi"
+    ],
+    "corpora_skipped": {},
+    "metrics": {
+      "cases": 22,
+      "faithfulness_pct": 100.0,
+      "faithfulness_basis": "28/28 shown answer sentences backed by a verified source quote (pipeline-reported, pooled)",
+      "hallucination_leakage_pct": 3.6,
+      "hallucination_leakage_basis": "1/28 shown claims failed the independent audit (uncited, quote absent from the PDF page, number not in quote, forbidden value, or shown where the right answer is a refusal)",
+      "citation_exact_match_pct": 100.0,
+      "citation_exact_match_basis": "30/30 citations whose quote re-appears verbatim on the cited PDF page (re-read with PyMuPDF)",
+      "abstention_accuracy_pct": 90.9,
+      "abstention_correct_refusals": "2/3",
+      "abstention_false_refusals": "1/18",
+      "contradiction": {
+        "precision_pct": 83.3,
+        "recall_pct": 100.0,
+        "tp": 5,
+        "fp": 1,
+        "fn": 0,
+        "definition": "case-level; TP needs a reported conflict whose >=2 docs are all gold evidence docs"
+      },
+      "superseded_false_positive_rate_pct": 0.0,
+      "superseded_fp_basis": "0/7 negative-control cases (amendment-explained differences) that were wrongly raised as a conflict",
+      "amendment_resolution_accuracy_pct": 91.7,
+      "amendment_resolution_basis": "11/12 cases: chain active doc == gold and the answer cites it",
+      "latency_s": {
+        "median": 33.2,
+        "p95": 51.4,
+        "mean": 32.9,
+        "min": 11.05,
+        "max": 53.67
+      },
+      "supplementary": {
+        "status_match_pct": 86.4,
+        "expected_value_hit_pct": 88.2,
+        "gold_page_cited_pct": 88.9,
+        "drafted_claims": 36,
+        "shown_claims": 28,
+        "blocked_claims_count": 8,
+        "draft_support_pct": 77.8,
+        "partial_proof_missing_flagged": [
+          true
+        ]
+      }
+    },
+    "corpus_scan": {
+      "acme": {
+        "reported_conflicts": [
+          "late payment fee",
+          "grace period"
+        ],
+        "involving_superseded_docs": 0
+      },
+      "rbi": {
+        "reported_conflicts": [],
+        "involving_superseded_docs": 0
+      }
+    },
+    "warmup_s": 21.5,
+    "total_s": 871.9,
+    "per_case": [
+      {
+        "id": "GD-01",
+        "corpus": "acme",
+        "category": "active_rule_amendment_chain",
+        "language": "en",
+        "question": "What is the late payment fee according to the latest active rule?",
+        "latency_s": 11.05,
+        "status": "contradicted",
+        "expected_status": "contradicted",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": true,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": true,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A late payment fee of 2% per month applies after the grace period.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-02",
+        "corpus": "acme",
+        "category": "amendment_chain_lineage",
+        "language": "en",
+        "question": "What is the current interest rate and how has it changed since version 1?",
+        "latency_s": 53.67,
+        "status": "partially_answered",
+        "expected_status": "answered",
+        "status_ok": false,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 3,
+        "blocked_claims": 2,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The interest rate is 7% per year for all standard personal loans.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": [
+          "Blocked claim “The interest rate has increased to 7% per year for all standard personal loans.” — unsupported_by_cited_evidence (nli=neutral:0.96)",
+          "Blocked claim “The late payment fee is now 1% per month after the due date, unchanged from version 1.” — unsupported_by_cited_evidence (nli=neutral:0.99); numeric_date_mismatch (numbers not in quote: ['1'])"
+        ]
+      },
+      {
+        "id": "GD-03",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "language": "en",
+        "question": "What is the standard loan tenure under the latest policy?",
+        "latency_s": 17.11,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The standard loan tenure is 36 months.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.2"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-04",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "language": "en",
+        "question": "What is the prepayment penalty under the latest policy?",
+        "latency_s": 22.39,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A prepayment penalty of 2% of the prepaid amount applies within 12 months.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-05",
+        "corpus": "acme",
+        "category": "superseded_negative_control",
+        "language": "en",
+        "question": "What is the minimum credit score required to qualify for a personal loan?",
+        "latency_s": 34.53,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "Applicants must have a minimum credit score of 700 to qualify for a standard personal loan.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.2"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-06",
+        "corpus": "acme",
+        "category": "contradiction_operations_notice",
+        "language": "en",
+        "question": "Are there any conflicting rules on late payment fees or grace periods?",
+        "latency_s": 45.54,
+        "status": "contradicted",
+        "expected_status": "contradicted",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": true,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": true,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ],
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": null,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 5,
+        "total_shown_sentences": 5,
+        "drafted_claims": 5,
+        "blocked_claims": 0,
+        "claims_shown": 5,
+        "citations_total": 7,
+        "citations_verbatim_on_pdf_page": 7,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A late payment fee of 5% per month applies after the due date for all delinquent personal loan accounts.",
+            "citations": [
+              "Acme_Operations_Notice.pdf p.1"
+            ]
+          },
+          {
+            "text": "A grace period of 15 days applies after the due date before any late payment fee is charged.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          },
+          {
+            "text": "The grace period for all delinquent accounts is 5 days after the due date.",
+            "citations": [
+              "Acme_Operations_Notice.pdf p.1"
+            ]
+          },
+          {
+            "text": "There are conflicting rules on late payment fees: Acme Loan Policy v3 states a fee of 2% per month, while Acme Operations Notice states a fee of 5% per month.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1",
+              "Acme_Operations_Notice.pdf p.1"
+            ]
+          },
+          {
+            "text": "There are conflicting grace periods: Acme Loan Policy v3 states a grace period of 15 days, while Acme Operations Notice states a grace period of 5 days.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1",
+              "Acme_Operations_Notice.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-07",
+        "corpus": "acme",
+        "category": "contradiction_operations_notice",
+        "language": "en",
+        "question": "How many days of grace period apply before a late payment fee is charged?",
+        "latency_s": 32.83,
+        "status": "contradicted",
+        "expected_status": "contradicted",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": true,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": true,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ],
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A grace period of 15 days applies after the due date before any late payment fee is charged.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-08",
+        "corpus": "acme",
+        "category": "multipage_table",
+        "language": "en",
+        "question": "What are the processing fees, bounce charges, and borrower eligibility conditions in the latest policy?",
+        "latency_s": 35.29,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 5,
+        "total_shown_sentences": 5,
+        "drafted_claims": 5,
+        "blocked_claims": 0,
+        "claims_shown": 5,
+        "citations_total": 5,
+        "citations_verbatim_on_pdf_page": 5,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "Processing Fee is INR 1,000 at disbursement.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          },
+          {
+            "text": "Bounce Charge is INR 750 per bounced EMI on dishonour of an instalment.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          },
+          {
+            "text": "Late Payment Fee is 2% per month after the grace period.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          },
+          {
+            "text": "Applicants must be between 21 and 60 years of age at the time of application.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.2"
+            ]
+          },
+          {
+            "text": "Applicants must have a minimum credit score of 700 to qualify for a standard personal loan.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.2"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-09",
+        "corpus": "acme",
+        "category": "multipage_clause",
+        "language": "en",
+        "question": "What happens if a borrower fails to repay 3 consecutive instalments?",
+        "latency_s": 27.63,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "Failure to repay 3 consecutive instalments classifies the account as delinquent.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.3"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-10",
+        "corpus": "acme",
+        "category": "abstention_out_of_scope",
+        "language": "en",
+        "question": "What is the policy on cryptocurrency collateral for personal loans?",
+        "latency_s": 30.82,
+        "status": "abstained",
+        "expected_status": "abstained",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": null,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": null,
+        "verified_sentences": 0,
+        "total_shown_sentences": 0,
+        "drafted_claims": 0,
+        "blocked_claims": 0,
+        "claims_shown": 0,
+        "citations_total": 0,
+        "citations_verbatim_on_pdf_page": 0,
+        "gold_page_cited": false,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [],
+        "missing_evidence": [
+          "What is the policy on cryptocurrency collateral for personal loans?",
+          "No claims could be verified against cited evidence."
+        ]
+      },
+      {
+        "id": "GD-11",
+        "corpus": "acme",
+        "category": "abstention_near_miss",
+        "language": "en",
+        "question": "What is the interest rate on Acme home loans?",
+        "latency_s": 21.56,
+        "status": "answered",
+        "expected_status": "abstained",
+        "status_ok": false,
+        "abstention_ok": false,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": null,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": false,
+        "leaked_claims": [
+          {
+            "claim": "The interest rate is 7% per year for all standard personal loans.",
+            "reasons": [
+              "shown_in_abstention_case"
+            ]
+          }
+        ],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The interest rate is 7% per year for all standard personal loans.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-12",
+        "corpus": "acme",
+        "category": "partial_proof",
+        "language": "en",
+        "question": "What is the processing fee and what is the international SWIFT wire transfer fee under the latest policy?",
+        "latency_s": 33.49,
+        "status": "partially_answered",
+        "expected_status": "partially_answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": true,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 2,
+        "blocked_claims": 1,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The processing fee is INR 1,000 at disbursement.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": [
+          "Blocked claim “No evidence found for international SWIFT wire transfer fee” — unresolved_source_id:missing_evidence"
+        ]
+      },
+      {
+        "id": "GD-13",
+        "corpus": "acme",
+        "category": "deterministic_calculation",
+        "language": "en",
+        "question": "Calculate the late payment penalty on an overdue EMI of Rs 50,000 for 2 months under the latest active rule.",
+        "latency_s": 23.18,
+        "status": "contradicted",
+        "expected_status": "contradicted",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": true,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": true,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 2,
+        "total_shown_sentences": 2,
+        "drafted_claims": 2,
+        "blocked_claims": 0,
+        "claims_shown": 2,
+        "citations_total": 2,
+        "citations_verbatim_on_pdf_page": 2,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": "Rs 2,000",
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A late payment fee of 2% per month applies on the overdue amount after the grace period.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          },
+          {
+            "text": "The grace period is 15 days after the due date before any late payment fee is charged.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-14",
+        "corpus": "acme",
+        "category": "missing_input_clarification",
+        "language": "en",
+        "question": "Calculate the late payment penalty on my overdue EMI.",
+        "latency_s": 42.58,
+        "status": "contradicted",
+        "expected_status": "clarification_needed",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": null,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 2,
+        "blocked_claims": 1,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": true,
+        "claims": [
+          {
+            "text": "A late payment fee of 2% per month applies on the overdue amount after the grace period.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": [
+          "Blocked claim “The grace period for all delinquent accounts is 15 days after the due date before any late payment fee is charged.” — unsupported_by_cited_evidence (nli=neutral:1.00)"
+        ]
+      },
+      {
+        "id": "GD-15",
+        "corpus": "acme",
+        "category": "hindi",
+        "language": "hi",
+        "question": "नवीनतम सक्रिय नियम के अनुसार विलंब भुगतान शुल्क (late payment fee) क्या है?",
+        "latency_s": 37.84,
+        "status": "contradicted",
+        "expected_status": "contradicted",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": true,
+        "contradiction_reported": true,
+        "contradiction_strict_tp": true,
+        "superseded_contradiction": false,
+        "contradictions": [
+          [
+            "acme_loan_policy_v3",
+            "acme_operations_notice"
+          ]
+        ],
+        "expected_active_doc": "acme_loan_policy_v3",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "acme_loan_policy_v3"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "A late payment fee of 2% per month applies on the overdue amount after the grace period.",
+            "citations": [
+              "Acme_Loan_Policy_v3.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-16",
+        "corpus": "rbi",
+        "category": "real_pdf_amendment_chain",
+        "language": "en",
+        "question": "From what date must the penal charges instructions be implemented for fresh loans?",
+        "latency_s": 39.11,
+        "status": "abstained",
+        "expected_status": "answered",
+        "status_ok": false,
+        "abstention_ok": false,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "penalcharges26a3a63141764128942edba48a78a491",
+        "amendment_resolution_ok": false,
+        "chain_active_docs": [
+          "penalcharges26a3a63141764128942edba48a78a491"
+        ],
+        "expected_value_ok": false,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": null,
+        "verified_sentences": 0,
+        "total_shown_sentences": 0,
+        "drafted_claims": 2,
+        "blocked_claims": 2,
+        "claims_shown": 0,
+        "citations_total": 0,
+        "citations_verbatim_on_pdf_page": 0,
+        "gold_page_cited": false,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [],
+        "missing_evidence": [
+          "Blocked claim “The penal charges instructions must be implemented for fresh loans from April 1, 2024 onwards.” — unsupported_by_cited_evidence (nli=neutral:0.98)",
+          "Blocked claim “The penal charges instructions shall be implemented in respect of all the fresh loans availed from April 1, 2024 onwards.” — unsupported_by_cited_evidence (nli=neutral:0.98)",
+          "No claims could be verified against cited evidence."
+        ]
+      },
+      {
+        "id": "GD-17",
+        "corpus": "rbi",
+        "category": "real_pdf_amendment_chain",
+        "language": "en",
+        "question": "By what date must existing loans be switched over to the new penal charges regime?",
+        "latency_s": 28.64,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": "penalcharges26a3a63141764128942edba48a78a491",
+        "amendment_resolution_ok": true,
+        "chain_active_docs": [
+          "penalcharges26a3a63141764128942edba48a78a491"
+        ],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The switchover to new penal charges regime for existing loans shall be ensured on the next review/renewal date falling on or after April 1, 2024, but not later than June 30, 2024.",
+            "citations": [
+              "PENALCHARGES26A3A63141764128942EDBA48A78A491.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-18",
+        "corpus": "rbi",
+        "category": "real_pdf_multipage_clause",
+        "language": "en",
+        "question": "Is capitalisation of penal charges allowed?",
+        "latency_s": 27.34,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "penalcharges26a3a63141764128942edba48a78a491"
+        ],
+        "expected_value_ok": false,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": false,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "Penal charges shall not be capitalized.",
+            "citations": [
+              "FAIRLENDINGPRACTICE1B9DBE75410B4DA881E6EF953304B6F7.pdf p.7"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-19",
+        "corpus": "rbi",
+        "category": "real_pdf_numeric",
+        "language": "en",
+        "question": "How much compensation must a regulated entity pay per day for delay in releasing original property documents?",
+        "latency_s": 39.19,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "₹5,000/- for each day of delay",
+            "citations": [
+              "NOTI60936A9DFA85554DD1BF77BCF4611AA69D.pdf p.2"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-20",
+        "corpus": "rbi",
+        "category": "real_pdf_numeric",
+        "language": "en",
+        "question": "Within how many days must original property documents be released after full repayment of the loan?",
+        "latency_s": 16.32,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "The REs shall release all the original movable / immovable property documents and remove charges registered with any registry within a period of 30 days after full repayment/ settlement of the loan account.",
+            "citations": [
+              "NOTI60936A9DFA85554DD1BF77BCF4611AA69D.pdf p.1"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      },
+      {
+        "id": "GD-21",
+        "corpus": "rbi",
+        "category": "real_pdf_abstention",
+        "language": "en",
+        "question": "What is the current repo rate announced by the Reserve Bank of India?",
+        "latency_s": 51.43,
+        "status": "abstained",
+        "expected_status": "abstained",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [
+          "penalcharges26a3a63141764128942edba48a78a491"
+        ],
+        "expected_value_ok": null,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": null,
+        "verified_sentences": 0,
+        "total_shown_sentences": 0,
+        "drafted_claims": 2,
+        "blocked_claims": 2,
+        "claims_shown": 0,
+        "citations_total": 0,
+        "citations_verbatim_on_pdf_page": 0,
+        "gold_page_cited": false,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [],
+        "missing_evidence": [
+          "Blocked claim “The current repo rate is not stated in the ACTIVE document.” — contradicted_by_cited_evidence (nli_contradiction=0.84)",
+          "Blocked claim “No evidence found for what is the current repo rate announced by the Reserve Bank of India.” — unresolved_source_id:missing_evidence",
+          "No claims could be verified against cited evidence."
+        ]
+      },
+      {
+        "id": "GD-22",
+        "corpus": "rbi",
+        "category": "hindi_real_pdf",
+        "language": "hi",
+        "question": "संपत्ति के मूल दस्तावेज़ जारी करने में देरी होने पर प्रति दिन कितना मुआवज़ा देना होगा?",
+        "latency_s": 51.17,
+        "status": "answered",
+        "expected_status": "answered",
+        "status_ok": true,
+        "abstention_ok": true,
+        "expect_contradiction": false,
+        "contradiction_reported": false,
+        "contradiction_strict_tp": false,
+        "superseded_contradiction": false,
+        "contradictions": [],
+        "expected_active_doc": null,
+        "amendment_resolution_ok": null,
+        "chain_active_docs": [],
+        "expected_value_ok": true,
+        "missing_evidence_ok": null,
+        "forbidden_value_hit": false,
+        "faithfulness_pct": 100.0,
+        "verified_sentences": 1,
+        "total_shown_sentences": 1,
+        "drafted_claims": 1,
+        "blocked_claims": 0,
+        "claims_shown": 1,
+        "citations_total": 1,
+        "citations_verbatim_on_pdf_page": 1,
+        "gold_page_cited": true,
+        "leaked_claims": [],
+        "calculation_result": null,
+        "clarification_requested": false,
+        "claims": [
+          {
+            "text": "₹5,000/- for each day of delay if the delay is attributable to the RE.",
+            "citations": [
+              "NOTI60936A9DFA85554DD1BF77BCF4611AA69D.pdf p.2"
+            ]
+          }
+        ],
+        "missing_evidence": []
+      }
+    ]
+  }
+}
