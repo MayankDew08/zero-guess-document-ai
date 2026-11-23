@@ -101,12 +101,12 @@ The reranker's win is ranking quality (MRR), not recall: dense-only ties it on R
 | Hallucination leakage (independent audit, lower is better) | 3.6% (1/28) |
 | Citation exact-match (quote verbatim on cited PDF page, re-read with PyMuPDF) | 100% (30/30) |
 | Abstention accuracy | 90.9% (20/22) |
-| Contradiction precision / recall | 83.3% / 100% (TP 5, FP 1, FN 0) |
+| Contradiction precision / recall | 71.4% / 100% (TP 5, FP 2, FN 0) |
 | Superseded false-positive rate | 0% (0/7 negative controls) |
-| Amendment-resolution accuracy | 91.7% (11/12) |
-| Latency median / p95 | 33.2 s / 51.4 s |
+| Amendment-resolution accuracy | 100% (12/12) |
+| Latency median / p95 | 16.3 s / 28.7 s (run alone on the CPU) |
 
-Known misses (not tuned away): GD-11 (home-loan interest question) answered with the *personal-loan* 7% rate instead of refusing — the 1 leaked claim; GD-16 (RBI fresh-loan date) falsely refused because NLI rated the claim neutral; GD-02 returned `partially_answered`. Gate 1 (CRAG threshold) refused 0/3 no-proof questions before generation; refusals came from Gates 2–4. Latencies were measured while another backend process shared the CPU, so treat them as an upper bound. Leakage counts a claim if it is uncited, its quote is absent from the PDF page, it contains a number absent from its quotes, contains a forbidden value, or is shown where the right answer is a refusal. Unit tests: **57 passing** (`pytest`).
+Known misses (not tuned away): GD-11 (home-loan interest question) answered with the *personal-loan* 7% rate instead of refusing — the 1 leaked claim; GD-18 (RBI multi-page clause) abstained; GD-02, GD-16 returned `partially_answered`, GD-09 `contradicted`, where the label says `answered`. Gate 1 (CRAG threshold) refused 0/3 no-proof questions before generation; refusals came from Gates 2–4. Latencies were measured with the evaluation alone on the CPU. Leakage counts a claim if it is uncited, its quote is absent from the PDF page, it contains a number absent from its quotes, contains a forbidden value, or is shown where the right answer is a refusal. Unit tests: **100 passing** (`pytest`).
 
 ## 60-second setup & demo
 

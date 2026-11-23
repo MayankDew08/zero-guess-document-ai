@@ -199,7 +199,8 @@ def _ask_pipeline(
             if not rv.chunks or not rv.crag_passed:  # this part has no proof at all: no LLM call, no guess
                 missing_all.append(f"No proof found in the documents for: {part}")
                 continue
-            prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False)
+            old_part = superseded_for_current_rule(part, {r.chunk.doc_id for r in rv.chunks}, app_store)
+            prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False, superseded_by=old_part)
             try:
                 raw_part = llm.generate_json(prompt)
             except Exception as e:  # LLM down/timeout -> abstain-with-reason, never a guess
@@ -222,6 +223,10 @@ def _ask_pipeline(
         debug_info["draft_claims"] = [c.model_dump() for c in draft.claims]
         # Gate 2 + Gate 3
         shown, blocked = resolve_and_verify_claims(draft.claims, app_store, nli)
+        old_docs = superseded_for_current_rule(question, {r.chunk.doc_id for r in retrieval.chunks}, app_store)
+        if old_docs:
+            debug_info["superseded_for_current_rule"] = old_docs
+        shown, blocked = _drop_superseded_only(shown, blocked, old_docs)
         if not shown and any(b.citations for b in blocked):  # rejected at Gate 3 (resolved citation, not entailed)
             # Bounded self-repair: every drafted claim failed Gate 2/3. Ask ONCE more (same evidence, same gates) with
             # the blocked claims listed and their sentence ids excluded. Nothing is relaxed: repaired claims are
@@ -230,7 +235,7 @@ def _ask_pipeline(
             if repair:
                 debug_info["repair_round"] = [c.model_dump() for c in repair]
                 shown2, blocked2 = resolve_and_verify_claims(repair, app_store, nli)
-                shown, blocked = shown2, blocked + blocked2
+                shown, blocked = _drop_superseded_only(shown2, blocked + blocked2, old_docs)
                 draft = DraftAnswer(claims=list(draft.claims) + repair, missing_evidence=draft.missing_evidence)
         shown = _dedupe_claims(shown)
         if hindi:  # stage 2: verified Hindi rendering of the verified English claims
@@ -294,6 +299,37 @@ def _ask_pipeline(
     return resp
 
 
+_HISTORICAL_Q = re.compile(
+    r"\bv\s*\d+\b|\bversion\b|\b(?:changed?|changes|history|historic\w*|earlier|previous\w*|prior|older|old|original|before|"
+    r"between|differ\w*|difference|compare\w*|conflict\w*|contradict\w*|amend\w*|supersed\w*|since)\b", re.IGNORECASE)
+
+
+def superseded_for_current_rule(question: str, retrieved_doc_ids: set[str], app_store: AppStore) -> dict[str, str]:
+    """doc_id -> active amending document's name, for superseded documents that were retrieved TOGETHER with
+    the newer document that amends them. Empty for questions about older versions / history / conflicts."""
+    if _HISTORICAL_Q.search(question or ""):
+        return {}
+    names = {d.doc_id: d.doc_name for d in app_store.documents.values()}
+    return {e.to_doc_id: names.get(e.from_doc_id, e.from_doc_id) for e in app_store.amendment_edges
+            if e.from_doc_id in retrieved_doc_ids and e.to_doc_id in retrieved_doc_ids}
+
+
+def _drop_superseded_only(shown: list, blocked: list, old: dict[str, str]) -> tuple[list, list]:
+    """Current-rule question: a verified claim whose citations are ALL in superseded documents is moved to
+    `blocked` (still reported) because the active amending document, retrieved alongside, governs."""
+    if not old:
+        return shown, blocked
+    keep, dropped = [], []
+    for c in shown:
+        if c.citations and all(cit.doc_id in old for cit in c.citations):
+            c.status = "blocked"
+            c.reason = f"superseded_document_not_current_rule (superseded by {old[c.citations[0].doc_id]})"
+            dropped.append(c)
+        else:
+            keep.append(c)
+    return keep, blocked + dropped
+
+
 _REPAIR_RULES = (
     "\n\nREPAIR ROUND: your previous claims were REJECTED by the verifier because the cited sentence did not fully entail them.\n"
     "Rejected claims:\n{rejected}\n"
@@ -316,7 +352,8 @@ def _repair_claims(parts, part_results, blocked, app_store, llm, hindi) -> list:
     for part, rv in zip(parts, part_results, strict=True):
         if not rv.chunks or not rv.crag_passed:
             continue
-        prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False) + _REPAIR_RULES.format(
+        old_part = superseded_for_current_rule(part, {r.chunk.doc_id for r in rv.chunks}, app_store)
+        prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False, superseded_by=old_part) + _REPAIR_RULES.format(
             rejected=rejected, banned=", ".join(banned) or "(none)")
         try:
             raw = llm.generate_json(prompt)
@@ -325,6 +362,7 @@ def _repair_claims(parts, part_results, blocked, app_store, llm, hindi) -> list:
             continue
         d = _route_no_evidence_statements(_parse_draft(raw))
         snap_citations(d.claims, [c.chunk for c in rv.chunks], superseded_doc_ids(app_store.amendment_edges))
+        attach_missing_sources(d.claims, [c.chunk for c in rv.chunks], set(old_part))
         for c in d.claims:
             if c.text.strip().lower() not in rejected_texts:  # an identical rejected claim is never re-submitted
                 c.claim_id = f"r{len(out) + 1}"
@@ -383,6 +421,26 @@ def snap_citations(claims: list[DraftClaim], chunks: list, superseded_docs: set[
         if best_sid and best_sid not in c.source_ids and sim(best_sid) >= 0.8 and sim(best_sid) > cur + 0.2:
             out.append({"claim_id": c.claim_id, "from": list(c.source_ids), "to": best_sid, "similarity": round(sim(best_sid), 2)})
             c.source_ids = [best_sid]
+    return out
+
+
+def attach_missing_sources(claims: list[DraftClaim], chunks: list, superseded_docs: set[str] | None = None) -> list[dict]:
+    """Repair-round only: a claim that restates (>=80% of its words) exactly ONE retrieved sentence but forgot its
+    source_ids gets that sentence id. Ambiguous matches stay unsourced (and are blocked at Gate 2); superseded
+    documents are only used when no live document matches. The NLI + numeric gates still verify the result."""
+    old = superseded_docs or set()
+    sents = [(s.sentence_id, ch.doc_id, _toks(s.text)) for ch in chunks for s in ch.sentences]
+    out: list[dict] = []
+    for c in claims:
+        ct = _toks(c.text)
+        if c.source_ids or not ct:
+            continue
+        scored = sorted(((len(ct & toks) / len(ct), sid, doc) for sid, doc, toks in sents), reverse=True)
+        good = [x for x in scored if x[0] >= 0.8]
+        live = [x for x in good if x[2] not in old] or good
+        if live and (len(live) == 1 or live[0][0] - live[1][0] >= 0.1):
+            c.source_ids = [live[0][1]]
+            out.append({"claim_id": c.claim_id, "attached": live[0][1], "similarity": round(live[0][0], 2)})
     return out
 
 

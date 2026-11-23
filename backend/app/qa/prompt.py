@@ -11,17 +11,33 @@ def is_hindi(text: str) -> bool:
     return bool(DEVANAGARI_RE.search(text or ""))
 
 
+MAX_TABLE_ROW_CHARS = 450  # a longer table-row "sentence" is a layout blob (e.g. an RBI Annex diff cell) NLI cannot entail
+
+
 def build_claim_prompt(question: str, chunks: list[RetrievedChunk], doc_status: dict[str, str] | None = None,
-                       hindi: bool | None = None) -> str:
+                       hindi: bool | None = None, superseded_by: dict[str, str] | None = None) -> str:
+    """`superseded_by` maps doc_id -> name of the ACTIVE document that amends/supersedes it. Only passed for
+    current-rule questions: those chunks are tagged and the active documents' chunks are listed first."""
     hindi = is_hindi(question) if hindi is None else hindi
     doc_status = doc_status or {}
+    superseded_by = superseded_by or {}
+    if superseded_by:  # stable: active-document evidence first
+        chunks = sorted(chunks, key=lambda r: r.chunk.doc_id in superseded_by)
+    has_body = any(r.chunk.chunk_type != "table" for r in chunks)
     blocks = []
     for r in chunks:
         c = r.chunk
         head = f"### {c.doc_name} | page {c.page} | [Context: {c.section_context or c.section or '-'}] | document_status: {doc_status.get(c.doc_id, 'STANDALONE')}"
+        if c.doc_id in superseded_by:
+            head += f" | [SUPERSEDED BY {superseded_by[c.doc_id]} — DO NOT CITE AS CURRENT RULE]"
         if c.chunk_type == "table":
             head += f" | table columns: {c.metadata.get('table_header')}"
-        lines = [f"[{s.sentence_id}] {s.text}" for s in c.sentences]
+        sents = c.sentences
+        if has_body:  # clean body clauses are available: skip giant table-row blobs
+            sents = [s for s in sents if not (len(s.text) > MAX_TABLE_ROW_CHARS and (c.chunk_type == "table" or " | " in s.text))]
+        if not sents:
+            continue
+        lines = [f"[{s.sentence_id}] {s.text}" for s in sents]
         blocks.append(head + "\n" + "\n".join(lines))
     evidence_json = "\n\n".join(blocks)
     if hindi:
