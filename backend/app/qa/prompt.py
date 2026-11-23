@@ -36,6 +36,8 @@ def build_claim_prompt(question: str, chunks: list[RetrievedChunk], doc_status: 
 RULES:
 - Output VALID JSON only. No markdown, no commentary.
 {language_rule}- Create atomic factual claims: 1 claim = 1 sentence, restating exactly what ONE cited sentence says.
+- If an ACTIVE document extends, postpones or modifies a date, period or rate stated in a SUPERSEDED document, answer with the ACTIVE document's new value, citing the ACTIVE document's sentence that states it (not the superseded document's).
+- A very long table row (contains ' | ' and is over 250 characters) is a layout artefact: prefer a plain sentence that says the same thing, and cite such a row only when no plain sentence does.
 - Be concise: return AT MOST 6-8 atomic claims, covering only the most relevant clauses for the question (do not enumerate every clause), and keep each claim short, so the JSON is never cut off.
 - A claim must say only what its cited sentence says: do not add qualifiers, dates, document names or reasoning that are not in that sentence.
 - Reuse the cited sentence's own words, including its nouns: do NOT swap in synonyms from the question (if the sentence says 'Applicants', write 'Applicants', not 'Borrowers').

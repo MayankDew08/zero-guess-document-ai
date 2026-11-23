@@ -207,7 +207,7 @@ def _ask_pipeline(
                 raw_part = {"claims": [], "missing_evidence": [f"LLM unavailable: {e}"]}
             raws.append(raw_part)
             d_part = _route_no_evidence_statements(_parse_draft(raw_part))
-            snapped = snap_citations(d_part.claims, [c.chunk for c in rv.chunks])
+            snapped = snap_citations(d_part.claims, [c.chunk for c in rv.chunks], superseded_doc_ids(app_store.amendment_edges))
             if snapped:
                 debug_info.setdefault("snapped_citations", []).extend(snapped)
             claims_all.extend(d_part.claims)
@@ -222,6 +222,16 @@ def _ask_pipeline(
         debug_info["draft_claims"] = [c.model_dump() for c in draft.claims]
         # Gate 2 + Gate 3
         shown, blocked = resolve_and_verify_claims(draft.claims, app_store, nli)
+        if not shown and any(b.citations for b in blocked):  # rejected at Gate 3 (resolved citation, not entailed)
+            # Bounded self-repair: every drafted claim failed Gate 2/3. Ask ONCE more (same evidence, same gates) with
+            # the blocked claims listed and their sentence ids excluded. Nothing is relaxed: repaired claims are
+            # re-verified exactly like the first ones, and the first round's blocked claims stay reported.
+            repair = _repair_claims(parts, part_results, blocked, app_store, llm, hindi)
+            if repair:
+                debug_info["repair_round"] = [c.model_dump() for c in repair]
+                shown2, blocked2 = resolve_and_verify_claims(repair, app_store, nli)
+                shown, blocked = shown2, blocked + blocked2
+                draft = DraftAnswer(claims=list(draft.claims) + repair, missing_evidence=draft.missing_evidence)
         shown = _dedupe_claims(shown)
         if hindi:  # stage 2: verified Hindi rendering of the verified English claims
             hindi_notes = render_claims_in_hindi(shown, llm, nli)
@@ -251,6 +261,7 @@ def _ask_pipeline(
         trace = _build_trace(retrieval, draft, shown, blocked, app_store.amendment_edges, contradictions, len(chains), True)
         resp = _abstain(request_id, question, hindi, missing_evidence, debug_info, debug, trace)
         resp.blocked_claims = blocked
+        resp.amendment_chains = chains  # lineage of the retrieved documents is context, not an unverified claim
         resp.blocked_claims_count = len(blocked)
         resp.drafted_claims_count = fa["drafted_claims_count"]
         resp.draft_support_pct = fa["draft_support_pct"]
@@ -283,6 +294,44 @@ def _ask_pipeline(
     return resp
 
 
+_REPAIR_RULES = (
+    "\n\nREPAIR ROUND: your previous claims were REJECTED by the verifier because the cited sentence did not fully entail them.\n"
+    "Rejected claims:\n{rejected}\n"
+    "Sentences behind the rejected claims (avoid them if another plain sentence answers the question): {banned}.\n"
+    "Write NEW claims: copy the wording of the sentence shown after WHAT THE CITED SENTENCE REALLY SAYS (it is the only thing a claim may say); each must restate ONE cited sentence nearly word-for-word and keep EVERY condition and qualifier it states "
+    "(e.g. 'if the delay is attributable to the RE'; 'were to come into effect'); do not generalise it. Prefer short plain "
+    "sentences over long table rows, and for a changed date prefer the ACTIVE document's sentence. "
+    "If no sentence supports an answer, return \"claims\": [] and say what is missing. Same JSON schema."
+)
+
+
+def _repair_claims(parts, part_results, blocked, app_store, llm, hindi) -> list:
+    """One extra drafting round after total Gate-3 rejection. Returns new, still UNVERIFIED DraftClaims."""
+    banned = sorted({sid for b in blocked for sid in b.source_ids})
+    rejected_texts = {b.text.strip().lower() for b in blocked}
+    rejected = "\n".join(
+        f"- REJECTED CLAIM: {b.text}\n  WHAT THE CITED SENTENCE REALLY SAYS: \"{(b.citations[0].quote if b.citations else '')[:300]}\"\n"
+        f"  WHY: {(b.reason or '').split(' (')[0]}" for b in blocked[:4])
+    out: list[DraftClaim] = []
+    for part, rv in zip(parts, part_results, strict=True):
+        if not rv.chunks or not rv.crag_passed:
+            continue
+        prompt = build_claim_prompt(part, rv.chunks, _doc_status(app_store), hindi=False) + _REPAIR_RULES.format(
+            rejected=rejected, banned=", ".join(banned) or "(none)")
+        try:
+            raw = llm.generate_json(prompt)
+        except Exception as e:
+            logger.warning("Repair round LLM failed: %s", e)
+            continue
+        d = _route_no_evidence_statements(_parse_draft(raw))
+        snap_citations(d.claims, [c.chunk for c in rv.chunks], superseded_doc_ids(app_store.amendment_edges))
+        for c in d.claims:
+            if c.text.strip().lower() not in rejected_texts:  # an identical rejected claim is never re-submitted
+                c.claim_id = f"r{len(out) + 1}"
+                out.append(c)
+    return out
+
+
 _NO_EVIDENCE_RE = re.compile(
     r"\b(no\s+(?:specific\b[^.]{0,80}?)?(?:evidence|proof|information|mention|data|details?)|"
     r"(?:is|are|was|were|has\s+been|have\s+been)?\s*not\s+(?:found|provided|available|mentioned|specified|stated|given|listed|disclosed)|"
@@ -311,13 +360,15 @@ def _toks(text: str) -> set[str]:
     return set(_TOKEN.findall((text or "").lower()))
 
 
-def snap_citations(claims: list[DraftClaim], chunks: list) -> list[dict]:
+def snap_citations(claims: list[DraftClaim], chunks: list, superseded_docs: set[str] | None = None) -> list[dict]:
     """Deterministic repair of an off-by-one / wrong sentence_id.
 
     If a claim restates (>=80% of its words) some retrieved sentence but barely overlaps the sentence it cites,
     cite the sentence it actually restates. Only sentences from the retrieved evidence are eligible, and the
     claim still has to pass NLI + numeric checks against the new quote."""
     sents = {s.sentence_id: _toks(s.text) for ch in chunks for s in ch.sentences}
+    doc_of = {s.sentence_id: ch.doc_id for ch in chunks for s in ch.sentences}
+    old_docs = superseded_docs or set()
     out: list[dict] = []
     for c in claims:
         ct = _toks(c.text)
@@ -325,7 +376,10 @@ def snap_citations(claims: list[DraftClaim], chunks: list) -> list[dict]:
             continue
         sim = lambda sid: len(ct & sents.get(sid, set())) / len(ct)  # noqa: E731  (containment of claim in sentence)
         cur = max((sim(sid) for sid in c.source_ids), default=0.0)
-        best_sid = max(sents, key=sim, default=None)
+        cited_active = any(doc_of.get(sid) not in old_docs for sid in c.source_ids)
+        # never "repair" a citation from a live document onto a SUPERSEDED document's look-alike sentence
+        pool = [sid for sid in sents if not (cited_active and doc_of.get(sid) in old_docs)]
+        best_sid = max(pool, key=sim, default=None)
         if best_sid and best_sid not in c.source_ids and sim(best_sid) >= 0.8 and sim(best_sid) > cur + 0.2:
             out.append({"claim_id": c.claim_id, "from": list(c.source_ids), "to": best_sid, "similarity": round(sim(best_sid), 2)})
             c.source_ids = [best_sid]

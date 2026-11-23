@@ -71,7 +71,8 @@ def _ask(store, claims):
         embedding_provider=FakeEmbeddingProvider(),
         reranker_provider=FakeRerankerProvider(),
         nli_provider=FakeNLIProvider(),
-        llm_provider=FakeLLMProvider(responses=[{"claims": claims, "missing_evidence": []}]),
+        llm_provider=FakeLLMProvider(responses=[{"claims": claims, "missing_evidence": []},
+                                                 {"claims": [], "missing_evidence": []}]),  # 2nd = scripted (empty) repair round
     )
 
 

@@ -17,9 +17,11 @@ class LLMProvider(Protocol):
 
 
 CONCISE_RETRY_SUFFIX = (
-    "\n\nIMPORTANT: your previous answer was cut off. Answer again with AT MOST 4 claims, each claim under 25 words, "
-    "citing only the most relevant sentences. Output complete, valid JSON only."
+    "\n\nIMPORTANT: your previous answer was cut off or had the wrong JSON shape. Answer again with AT MOST 4 claims, "
+    "each claim under 25 words, citing only the most relevant sentences. Output complete, valid JSON only, EXACTLY in "
+    'this shape: {"claims": [{"claim": "...", "source_ids": ["..."]}], "missing_evidence": [...]}'
 )
+_SYNONYM_KEYS = ("response", "responses", "answers", "answer", "results", "result", "items", "claim_list", "output")
 
 
 class OllamaLLMProvider:
@@ -60,9 +62,10 @@ class OllamaLLMProvider:
             data = resp.json()
         raw = data.get("response", "")
         obj = _try_parse_json(raw)
-        if obj is not None:
+        wants_claims = '"claims"' in prompt  # claim-drafting prompts only (translation prompts use another shape)
+        if obj is not None and not (wants_claims and not _has_claims_shape(obj)):
             return obj
-        # Unparseable and nothing salvageable: ONE concise retry (the first answer was probably cut off).
+        # Unparseable / nothing salvageable / no `claims` key: ONE concise retry with an explicit JSON-shape reminder.
         logger.warning("LLM output unusable (%s chars); retrying once with a concise-output instruction", len(raw or ""))
         payload["prompt"] = prompt + CONCISE_RETRY_SUFFIX
         with httpx.Client(timeout=timeout) as client:
@@ -104,7 +107,38 @@ class FakeLLMProvider:
             return {"claims": [], "missing_evidence": ["No relevant evidence found in prompt."]}
         return {"claims": claims, "missing_evidence": []}
 
+def _has_claims_shape(obj: dict[str, Any]) -> bool:
+    return "claims" in obj or "missing_evidence" in obj
+
+
+def normalize_claim_keys(obj: dict[str, Any]) -> dict[str, Any]:
+    """`{"response": [{"claim"/"text": ..., "source_ids": [...]}]}` -> `{"claims": [...]}`.
+
+    Only re-labels the container: every item must still carry claim text AND source_ids (items that do not are
+    dropped, never repaired), so Gate 2 / Gate 3 verification is untouched."""
+    if "claims" in obj:
+        return obj
+    for key in _SYNONYM_KEYS:
+        val = obj.get(key)
+        if isinstance(val, dict):
+            val = [val]
+        if not isinstance(val, list):
+            continue
+        valid = [v for v in val if isinstance(v, dict) and str(v.get("claim") or v.get("text") or "").strip()
+                 and (v.get("source_ids") or v.get("sources"))]
+        if valid:
+            logger.warning("Normalised LLM key '%s' -> 'claims' (%s of %s items valid)", key, len(valid), len(val))
+            return {**{k: v for k, v in obj.items() if k != key}, "claims": valid,
+                    "missing_evidence": obj.get("missing_evidence", [])}
+    return obj
+
+
 def _try_parse_json(raw: str) -> dict[str, Any] | None:
+    obj = _parse_json_strict(raw)
+    return normalize_claim_keys(obj) if obj is not None else None
+
+
+def _parse_json_strict(raw: str) -> dict[str, Any] | None:
     """Strict parse, then first-object extraction, then truncated-array salvage. None if nothing usable."""
     raw = (raw or "").strip()
     if not raw:

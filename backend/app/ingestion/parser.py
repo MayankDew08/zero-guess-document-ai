@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import statistics
 from collections import Counter
 from pathlib import Path
@@ -54,15 +55,27 @@ def parse_pdf(path: str | Path) -> list[dict]:
                 }))
 
             # --- text blocks (paragraphs / headings) --------------------------------------
+            # Words are assigned to text blocks by GEOMETRY (word centre inside the block box), never by block
+            # number: the numbering of get_text("words") and get_text("dict") can disagree (e.g. pages with images),
+            # which attached a line's text to another line's bbox.
+            free_words = [w for w in words if not _in_any(pymupdf.Rect(w[:4]), table_rects)]
+            dict_blocks = [b for b in page.get_text("dict").get("blocks", []) if b.get("type") == 0]
             words_by_block: dict[int, list] = {}
-            for w in words:
-                if _in_any(pymupdf.Rect(w[:4]), table_rects):
-                    continue
-                words_by_block.setdefault(int(w[5]), []).append(w)
+            for b in dict_blocks:
+                inside = [w for w in free_words if b["bbox"][0] - 1 <= (w[0] + w[2]) / 2 <= b["bbox"][2] + 1
+                          and b["bbox"][1] - 1 <= (w[1] + w[3]) / 2 <= b["bbox"][3] + 1]
+                # keep only words that really are this block's text: a diagonal watermark ("Withdrawn") whose
+                # box overlaps the paragraph must not leak its words into it
+                budget = Counter(tok for ln in b.get("lines", []) for sp in ln.get("spans", []) for tok in sp.get("text", "").split())
+                kept: list = []
+                for w in sorted(inside, key=lambda w: (int(w[5]), int(w[6]), int(w[7]))):
+                    if budget[str(w[4])] > 0:
+                        budget[str(w[4])] -= 1
+                        kept.append(w)
+                expected = sum(len(sp.get("text", "").split()) for ln in b.get("lines", []) for sp in ln.get("spans", []))
+                words_by_block[int(b["number"])] = kept if expected and len(kept) >= 0.6 * expected else inside
 
-            for blk in page.get_text("dict").get("blocks", []):
-                if blk.get("type") != 0:
-                    continue
+            for blk in dict_blocks:
                 bwords = words_by_block.get(int(blk.get("number", -1)))
                 if not bwords:
                     continue
@@ -82,12 +95,18 @@ def parse_pdf(path: str | Path) -> list[dict]:
                 }
                 if is_heading:
                     block["font_size"] = max(float(sp.get("size", 0)) for sp in spans)
-                if not is_heading:
-                    block["sent_bboxes"] = _sentence_bboxes(page, text, bwords, norm_words, blk["bbox"], mk)
+                if not is_heading:  # sentence bboxes are computed after soft-wrapped lines are reflowed
+                    block["_rect"] = pymupdf.Rect(blk["bbox"])
+                    block["_bwords"], block["_nwords"] = bwords, norm_words
                 items.append((float(blk["bbox"][1]), block))
 
             items.sort(key=lambda it: it[0])
-            blocks: list[dict] = [block for _, block in items]
+            blocks: list[dict] = reflow_blocks([block for _, block in items])
+            for block in blocks:
+                if block.get("block_type") == "paragraph" and "_rect" in block:
+                    rect = block.pop("_rect")
+                    block["bbox"] = mk(rect)
+                    block["sent_bboxes"] = _sentence_bboxes(page, block["text"], block.pop("_bwords"), block.pop("_nwords"), rect, mk)
 
             page_text = normalize_text("\n".join(b["text"] for b in blocks))
             pages.append({"page": i + 1, "text": page_text, "blocks": blocks, "width": width, "height": height})
@@ -152,6 +171,52 @@ def _body_font_size(doc) -> float:
     return statistics.median(sizes) if sizes else 10.0
 
 
+# ------------------------------------------------------------------------------------------ line reflow
+_TERMINAL = (".", "?", "!", ":")
+_LIST_START_RE = re.compile(
+    r"^\s*(?:[•●▪◦‣\-*–—]\s|\(\s*(?:[ivxlcdm]+|[a-zA-Z]|\d+)\s*\)|\d+[.)]\s|\d+(?:\.\d+)+\s+(?-i:[A-Z])|[A-Za-z]\)\s)", re.IGNORECASE)
+_MAX_LINE_GAP = 5.0   # pt between the bottom of a line and the top of the next one inside one paragraph
+_MAX_X_SHIFT = 25.0   # pt: wrapped lines share (about) the same left edge
+
+
+def _should_join(prev: dict, nxt: dict) -> bool:
+    """True when `nxt` is the soft-wrapped continuation of paragraph block `prev` (same page by construction)."""
+    if prev.get("block_type") != "paragraph" or nxt.get("block_type") != "paragraph":
+        return False  # tables / headings are never merged
+    if "_rect" not in prev or "_rect" not in nxt:
+        return False
+    a, b = prev["text"].rstrip(), nxt["text"].lstrip()
+    if not a or not b or a.endswith(_TERMINAL) or _LIST_START_RE.match(b):
+        return False
+    ra, rb = prev["_rect"], nxt["_rect"]
+    max_gap = max(_MAX_LINE_GAP, 0.8 * min(rb.height, 16.0))  # double-spaced RBI letters leave ~7pt between lines
+    return -2.0 <= rb.y0 - ra.y1 <= max_gap and abs(rb.x0 - ra.x0) <= _MAX_X_SHIFT
+
+
+def _join_text(a: str, b: str) -> str:
+    a, b = a.rstrip(), b.lstrip()
+    if a.endswith("-") and len(a) > 1 and a[-2].isalpha() and b[:1].islower():
+        return a + b  # "non-" + "compliance" -> "non-compliance" (no stray space); "₹5,000/-" is untouched
+    return f"{a} {b}"
+
+
+def reflow_blocks(blocks: list[dict]) -> list[dict]:
+    """Join soft-wrapped lines of one paragraph into continuous prose BEFORE sentence splitting, so a sentence
+    that RBI-style PDFs wrap across lines is stored (and quoted) whole. Table rows, headings, bullets and
+    numbered / lettered list items are left exactly as they were."""
+    out: list[dict] = []
+    for blk in blocks:
+        if out and _should_join(out[-1], blk):
+            prev = out[-1]
+            prev["text"] = normalize_text(_join_text(prev["text"], blk["text"]))
+            prev["_rect"] = pymupdf.Rect(prev["_rect"]) | pymupdf.Rect(blk["_rect"])
+            prev["_bwords"] = list(prev["_bwords"]) + list(blk["_bwords"])
+            prev["_nwords"] = list(prev["_nwords"]) + list(blk["_nwords"])
+            continue
+        out.append(blk)
+    return out
+
+
 def _is_heading(spans: list[dict], text: str, body_size: float) -> bool:
     if len(text) > 120:
         return False
@@ -201,6 +266,8 @@ def _sentence_bboxes(page, text: str, bwords: list, norm_words: list[str], block
             rects = [r for r in page.search_for(sent, clip=clip) if r.width > 0]
         except Exception:
             rects = []
+        if not rects:  # wrapped / re-joined sentence: union of its first and last few words
+            rects = _head_tail_rects(page, sent, clip)
         box = None
         if rects:
             box = _union(rects)
@@ -216,6 +283,19 @@ def _sentence_bboxes(page, text: str, bwords: list, norm_words: list[str], block
             box = locate_cells_bbox(page, sent.split(" | "), block_bbox)
         out[sent] = mk(box if box is not None else pymupdf.Rect(block_bbox))
     return out
+
+
+def _head_tail_rects(page, sent: str, clip, n: int = 7) -> list:
+    """Hits of the first and the last ~n words of a (multi-line) sentence; only trusted when BOTH ends are found."""
+    words = sent.split()
+    if len(words) < 2 * n:
+        return []
+    try:
+        head = [r for r in page.search_for(" ".join(words[:n]), clip=clip) if r.width > 0]
+        tail = [r for r in page.search_for(" ".join(words[-n:]), clip=clip) if r.width > 0]
+    except Exception:
+        return []
+    return head[:1] + tail[-1:] if head and tail else []
 
 
 def _union(rects) -> pymupdf.Rect:
