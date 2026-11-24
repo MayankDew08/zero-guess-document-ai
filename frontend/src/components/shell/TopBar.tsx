@@ -44,11 +44,11 @@ export function TopBar({ workspace, mode, ollama, models, onWorkspaceChange, onM
           </select>
           <ChevronDown aria-hidden="true" size={12} className="pointer-events-none -ml-5 text-zinc-500" />
         </label>
-        <div className="hidden items-center gap-1.5 rounded-full bg-emerald-400/10 px-2.5 py-1.5 text-[10px] font-medium text-emerald-300 xl:flex"><LockKeyhole aria-hidden="true" size={12} />100% Local · Offline · Zero Paid APIs</div>
+        <div className="hidden shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-400/10 px-2.5 py-1.5 text-[10px] font-medium text-emerald-300 min-[1120px]:flex"><LockKeyhole aria-hidden="true" size={12} />100% Local · Offline · Zero Paid APIs</div>
         <div className="hidden items-center gap-1.5 text-[10px] text-zinc-400 sm:flex" role="status">
           <span className={`h-2 w-2 rounded-full ${up ? 'bg-emerald-400' : 'bg-rose-400'}`} />Ollama {ollama ?? 'unreachable'}
         </div>
-        <div className="hidden max-w-[260px] truncate font-mono text-[9px] text-zinc-600 2xl:block" title={models}>{models}</div>
+        <div className="hidden max-w-[340px] truncate font-mono text-[9px] text-zinc-600 2xl:block" title={models}>{models}</div>
       </div>
     </header>
   )

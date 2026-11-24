@@ -183,6 +183,56 @@ def test_turn_two_fills_slots_and_computes_exact_decimal_result():
         assert t2.faithfulness_pct == 100.0 and t2.claims
 
 
+def test_calculation_followup_reuses_prior_principal_and_changes_the_period():
+    st = sample_store()
+    t1, _ = _ask(st, CALC_Q)
+    hist1 = [ChatTurn(question=CALC_Q, answer_summary=t1.answer, pending_calculation=t1.clarification_needed.pending_calculation)]
+    t2, _ = _ask(st, "Rs 50000 for 3 months", history=hist1)
+    assert t2.calculation and t2.calculation.result == "Rs 3,000"
+    hist2 = hist1 + [ChatTurn(question="Rs 50000 for 3 months",
+                              answer_summary="A late payment fee of 2% per month applies after the grace period. "
+                                             "Calculated (deterministic, from the cited active rule): Rs 3,000.")]
+    for reply, expected in (("what about for 4 months?", "Rs 4,000"), ("what about Rs 60,000?", "Rs 3,600")):
+        t3, _ = _ask(st, reply, history=hist2)
+        assert t3.rewritten_question == (
+            "Calculate the late payment penalty on Rs 50,000 for 4 months under the latest active rule." if "4 months" in reply
+            else "Calculate the late payment penalty on Rs 60,000 for 3 months under the latest active rule."
+        )
+        assert t3.calculation and t3.calculation.result == expected
+        assert t3.clarification_needed is None
+    t3, _ = _ask(st, "what about for 4 months?", history=hist2)
+    hist3 = hist2 + [ChatTurn(question="what about for 4 months?",
+                              answer_summary="A late payment fee of 2% per month applies after the grace period. "
+                                             "Calculated (deterministic, from the cited active rule): Rs 4,000.")]
+    t4, _ = _ask(st, "what about for 25000 rs?", history=hist3)
+    assert t4.rewritten_question == "Calculate the late payment penalty on Rs 25,000 for 4 months under the latest active rule."
+    assert t4.calculation and t4.calculation.result == "Rs 2,000"
+    t5, _ = _ask(st, "what about 25,000?", history=hist3)
+    assert t5.rewritten_question == "Calculate the late payment penalty on Rs 25,000 for 4 months under the latest active rule."
+    assert t5.calculation and t5.calculation.result == "Rs 2,000"
+    t6, _ = _ask(st, "what about 4-months?", history=hist2)
+    assert t6.rewritten_question == "Calculate the late payment penalty on Rs 50,000 for 4 months under the latest active rule."
+    assert t6.calculation and t6.calculation.result == "Rs 4,000"
+
+
+def test_repeated_calculation_followups_keep_their_inputs_beyond_two_turns():
+    st = sample_store()
+    q1 = "Calculate the late payment penalty on Rs 50,000 for 2 months under the latest active rule."
+    t1, _ = _ask(st, q1)
+    h1 = [ChatTurn(question=q1, answer_summary=t1.answer, calculation_kind=t1.calculation.kind,
+                   calculation_inputs=t1.calculation.inputs)]
+    t2, _ = _ask(st, "what about 4 months?", history=h1)
+    h2 = h1 + [ChatTurn(question="what about 4 months?", answer_summary=t2.answer, calculation_kind=t2.calculation.kind,
+                        calculation_inputs=t2.calculation.inputs)]
+    t3, _ = _ask(st, "what about 25,000?", history=h2)
+    assert t3.calculation and t3.calculation.result == "Rs 2,000"  # 25k at 2% for 4 months
+    h3 = h2 + [ChatTurn(question="what about 25,000?", answer_summary=t3.answer, calculation_kind=t3.calculation.kind,
+                        calculation_inputs=t3.calculation.inputs)]
+    t4, _ = _ask(st, "what about 6 months?", history=h3)
+    assert t4.rewritten_question == "Calculate the late payment penalty on Rs 25,000 for 6 months under the latest active rule."
+    assert t4.calculation and t4.calculation.result == "Rs 3,000"
+
+
 def test_partial_reply_asks_only_for_what_is_still_missing():
     st = sample_store()
     t1, _ = _ask(st, CALC_Q)
@@ -240,6 +290,7 @@ def test_followup_flows_through_the_gates_as_the_rewritten_question():
     resp, llm = _ask(st, "What about in v1?", history=HIST)
     assert resp.rewritten_question == "What is the late payment fee in v1?" and resp.question == "What about in v1?"
     assert "What is the late payment fee in v1?" in llm.calls[0]  # the drafting prompt got the standalone question
+    assert "Acme_Loan_Policy_v3.pdf | page" not in llm.calls[0]  # retrieval is scoped to the named v1
     assert resp.pipeline_trace is not None and resp.pipeline_trace.gate1_retrieval.threshold == 0.0  # Gate 1 ran this turn
     assert resp.claims and all(cit.sentence_id in st.sentence_index for cl in resp.claims for cit in cl.citations)
     plain, _ = _ask(st, "What is the grace period?", history=HIST)

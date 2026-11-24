@@ -32,6 +32,8 @@ function turnsToHistory(turns: Turn[]): ChatTurn[] {
     question: t.question,
     answer_summary: (t.response?.answer || '').slice(0, 300),
     pending_calculation: t.response?.clarification_needed?.pending_calculation ?? null,
+    calculation_kind: t.response?.calculation?.kind ?? null,
+    calculation_inputs: t.response?.calculation?.inputs ?? null,
   }))
 }
 
@@ -163,7 +165,7 @@ export default function App() {
 
   const open = useCallback((c: EvidenceRef) => setEvidence(c), [])
   const closeEv = useCallback(() => setEvidence(null), [])
-  const models = health ? `${String(health.model).replace('-instruct', '')} · bge-m3 · bge-reranker-v2-m3 · mDeBERTa-xnli` : 'qwen2.5:7b · bge-m3 · bge-reranker-v2-m3 · mDeBERTa-xnli'
+  const models = health ? `${String(health.model).replace('-instruct', '')} · bge-m3 · bge-reranker-v2-m3 · mDeBERTa-v3` : 'qwen2.5:7b · bge-m3 · bge-reranker-v2-m3 · mDeBERTa-v3'
   const awaitingInputs = !!thread[thread.length - 1]?.response?.clarification_needed
   const canManage = !readOnly
   const showPresets = mode !== 'byo'

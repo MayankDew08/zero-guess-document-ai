@@ -55,7 +55,7 @@ class AppStore:
 
     def all_chunks(self, doc_ids: list[str] | None = None) -> list[Chunk]:
         chunks = list(self.chunks.values())
-        if doc_ids:
+        if doc_ids is not None:
             allowed = set(doc_ids)
             chunks = [c for c in chunks if c.doc_id in allowed]
         return chunks

@@ -4,6 +4,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from app.amendments.graph import active_chain_doc_ids, build_amendment_chains, superseded_doc_ids
@@ -153,6 +154,59 @@ def ask_question(
     return resp
 
 
+def _norm_doc_ref(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+_EXPLICIT_VERSION_Q = re.compile(r"\b(?:v|version)\s*(\d+)\b", re.IGNORECASE)
+_VERSION_SUFFIX_RE = re.compile(r"[\s_\-]*v(?:ersion)?[\s_\-]*(\d+)\s*$", re.IGNORECASE)
+_COMPARISON_Q = re.compile(r"\b(?:compare|comparison|versus|vs\.?|between|differ\w*|difference|change[sd]?|conflict\w*|contradict\w*)\b", re.IGNORECASE)
+
+
+def explicit_version_doc_ids(question: str, app_store: AppStore) -> list[str]:
+    """Document ids when the question names exactly one document/version (e.g. 'in v1').
+
+    Follow-up rewriting can produce a historical question, but retrieval would otherwise still return the
+    ACTIVE document and the drafter would answer with the current rule. Scope only unambiguous asks; return []
+    for unversioned, comparison ('v1 vs v3') or ambiguous ('v1' in two document families) questions."""
+    q = question or ""
+    if _COMPARISON_Q.search(q):
+        return []  # comparisons need both sides in the evidence
+    versions = {int(m.group(1)) for m in _EXPLICIT_VERSION_Q.finditer(q)}
+    if len(versions) > 1:
+        return []  # several versions named: comparison, not a single-version lookup
+
+    names = {d.doc_id: d.doc_name for d in app_store.documents.values()}
+    q_norm = _norm_doc_ref(q)
+    named = []
+    for doc_id, name in names.items():
+        stem = _norm_doc_ref(Path(name).stem)
+        if len(stem) >= 6 and stem in q_norm:
+            named.append(doc_id)
+    if len(named) == 1:
+        return named
+    if len(named) > 1:
+        return []  # several documents named: comparison, not a single-version lookup
+    if len(versions) != 1:
+        return []
+    want = versions.pop()
+    matches = []
+    for doc_id, name in names.items():
+        m = _VERSION_SUFFIX_RE.search(Path(name).stem)
+        if m and int(m.group(1)) == want:
+            matches.append(doc_id)
+    return matches if len(matches) == 1 else []
+
+
+def _scoped_doc_ids(question: str, doc_ids: list[str] | None, app_store: AppStore) -> list[str] | None:
+    named = explicit_version_doc_ids(question, app_store)
+    if not named:
+        return doc_ids
+    if doc_ids is None:
+        return named
+    return [d for d in named if d in doc_ids]
+
+
 def _ask_pipeline(
     question: str,
     doc_ids: list[str] | None = None,
@@ -177,7 +231,7 @@ def _ask_pipeline(
     parts = split_question_parts(question)
     rep.start("retrieve", parts=len(parts))
     extra = {"progress": rep.start} if rep.enabled else {}
-    part_results = [retrieve(query=p, top_k=top_k, doc_ids=doc_ids, app_store=app_store,
+    part_results = [retrieve(query=p, top_k=top_k, doc_ids=_scoped_doc_ids(p, doc_ids, app_store), app_store=app_store,
                              embedding_provider=embedding_provider, reranker_provider=reranker_provider,
                              apply_reranker=True, apply_crag_gate=True, **extra) for p in parts]
     retrieval = _merge_retrievals(part_results)
@@ -195,6 +249,8 @@ def _ask_pipeline(
 
     doc_name_by_id = {d.doc_id: d.doc_name for d in app_store.documents.values()}
     chains = build_amendment_chains(app_store.amendment_edges, doc_name_by_id)
+    named_version_docs = explicit_version_doc_ids(question, app_store)
+    historical_version = bool(set(named_version_docs) & superseded_doc_ids(app_store.amendment_edges))
 
     # Deterministic calculator needs no LLM: rate comes from a verified sentence of the active rule.
     calculation, calc_missing = (None, [])
@@ -285,7 +341,7 @@ def _ask_pipeline(
     # Amendment-aware contradiction detection (conflicts explained by the amendment graph are excluded)
     contradictions = []
     rep.start("lineage")
-    if settings.enable_contradictions:
+    if settings.enable_contradictions and not historical_version:
         contradictions = detect_contradictions(shown, retrieval, app_store.amendment_edges, nli_provider=nli,
                                                app_store=app_store, question=question)
         if calculation is not None and not calculation.warnings:
@@ -322,7 +378,8 @@ def _ask_pipeline(
         status = "partially_answered"
     else:
         status = "answered"
-    answer = _compose_answer(shown, calculation, contradictions, chains, hindi)
+    answer = _compose_answer(shown, calculation, chains, hindi,
+                             include_chain_note=not historical_version)
     confidence, breakdown = _compute_confidence(retrieval, shown, blocked, contradictions, fa["faithfulness_pct"])
     trace = _build_trace(retrieval, draft, shown, blocked, app_store.amendment_edges, contradictions, len(chains), False)
     resp = AskResponse(
@@ -453,7 +510,7 @@ def snap_citations(claims: list[DraftClaim], chunks: list, superseded_docs: set[
         ct = _toks(c.text)
         if not c.source_ids or not ct:
             continue
-        sim = lambda sid: len(ct & sents.get(sid, set())) / len(ct)  # noqa: E731  (containment of claim in sentence)
+        sim = lambda sid, _ct=ct: len(_ct & sents.get(sid, set())) / len(_ct)  # noqa: E731  (containment of claim in sentence)
         cur = max((sim(sid) for sid in c.source_ids), default=0.0)
         cited_active = any(doc_of.get(sid) not in old_docs for sid in c.source_ids)
         # never "repair" a citation from a live document onto a SUPERSEDED document's look-alike sentence
@@ -557,16 +614,26 @@ def _parse_draft(raw: dict[str, Any]) -> DraftAnswer:
     return DraftAnswer(claims=claims, missing_evidence=missing)
 
 
-def _compose_answer(shown, calculation, contradictions, chains, hindi) -> str:
+_TERMINAL_PUNCT = (".", "!", "?", "।", ";", ":")
+
+
+def _as_sentence(text: str, hindi: bool) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return text if text.endswith(_TERMINAL_PUNCT) else text + ("।" if hindi else ".")
+
+
+def _compose_answer(shown, calculation, chains, hindi, include_chain_note: bool = True) -> str:
     parts: list[str] = []
     if hindi and shown:
         parts.append("सत्यापित उत्तर (verified answer):")
-    parts.extend(c.text for c in shown)  # only verified claims form the answer
+    claims = " ".join(_as_sentence(c.text, hindi) for c in shown)  # only verified claims form the answer
+    if claims:
+        parts.append(claims)
     if calculation is not None:
         parts.append(f"Calculated (deterministic, from the cited active rule): {calculation.result}.")
-    if contradictions:
-        parts.append("⚠ Conflicting sources detected — see Contradiction Alerts; not resolved by guessing.")
-    resolved = [ch for ch in chains if ch.status == "resolved" and ch.active_doc_name]
+    resolved = [ch for ch in chains if ch.status == "resolved" and ch.active_doc_name] if include_chain_note else []
     if resolved:
         parts.append(f"Amendment chain: {resolved[0].active_doc_name} is the latest active version.")
     return " ".join(parts).strip() or ABSTAIN_EN

@@ -17,6 +17,28 @@ def test_query_parsing():
     assert not is_calculation_query("What is the late payment fee according to the latest active rule?")
     assert parse_amount(Q) == Decimal("50000")
     assert parse_months(Q) == Decimal("2")
+    for text in ("25000 rs", "25,000 Rs.", "25000 INR", "25000 rupees", "25000₹", "25,000/-"):
+        assert parse_amount(text) == Decimal("25000"), text
+    assert parse_amount("Rs 50k") == Decimal("50000")
+    assert parse_amount("Rs 2 cr") == Decimal("20000000")
+    assert parse_amount("2 lakh") == Decimal("200000")
+    assert parse_amount("what about 25,000?", allow_bare=True) == Decimal("25000")
+    assert parse_amount("2 months", allow_bare=True) is None  # a period is not an amount
+    assert parse_amount("4-months", allow_bare=True) is None
+    assert parse_amount("under RBI circular 102", allow_bare=True) is None
+    for text, expected in (("2-months", "2"), ("4 mo", "4"), ("1 yr", "12")):
+        assert parse_months(text) == Decimal(expected), text
+    assert parse_months("2 wks") == Decimal("2") * 12 / 52
+
+
+def test_common_amount_and_period_formats_do_not_silently_change_the_amount():
+    st = sample_store()
+    for q in ("Calculate the late payment penalty on Rs 50k for 2-months",
+              "Calculate the late payment penalty on Rs 50,000 for 2 mo",
+              "Calculate the late payment penalty on 50,000 for 2 months"):
+        calc, missing = calculate(q, st)
+        assert missing == [] and calc is not None, q
+        assert calc.inputs["overdue_amount"] == 50000.0 and calc.result == "Rs 2,000", q
 
 
 def test_late_fee_uses_active_v3_rate_and_exact_math():

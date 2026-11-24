@@ -63,6 +63,7 @@ RULES:
 - If the question names a section (e.g. 'bonus features', 'deliverables', 'must-have features'), answer ONLY from sentences whose [Context] ends with that section name and include every sentence of that section that is relevant.
 - Table rows list their cells separated by " | " in the order of the table columns: name the fee type and its amount in the claim.
 - document_status tells you which rules are live: ACTIVE = latest in an amendment chain, SUPERSEDED = replaced by a newer document (historical only), STANDALONE = no amendment link.
+- If the question names a specific older version (e.g. 'in v1' / 'version 2'), answer from that version's evidence even when its document_status is SUPERSEDED; do not substitute the ACTIVE document's value.
 - For "latest / current / active" questions you MUST include a claim from the ACTIVE document that answers the question; never present a SUPERSEDED document's value as the current rule.
 - If STANDALONE and ACTIVE documents disagree, state each one as its own claim (one per document); never resolve the disagreement yourself.
 - Never do arithmetic and never copy amounts or periods from the question into a claim. For calculation questions only state the applicable rate/rule found in the evidence (cite the sentence containing the rate); a separate deterministic calculator computes the result.

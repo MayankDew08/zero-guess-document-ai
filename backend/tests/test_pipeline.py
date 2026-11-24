@@ -185,3 +185,36 @@ def test_llm_placeholder_claim_type_does_not_crash_parsing():
     d = _parse_draft({"claims": [{"claim_id": "c1", "text": "x is 2%", "claim_type": "numeric|rule", "source_ids": ["a#s0"]},
                                  {"claim_id": "c2", "text": "y", "claim_type": "weird", "source_ids": []}]})
     assert [c.claim_type for c in d.claims] == ["numeric", "factual"]
+
+
+class _BorrowerNLI:
+    """Mimics the real mDeBERTa behaviour: 'Borrowers' substituted for 'Applicants' is scored as contradiction."""
+    def predict(self, premise: str, hypothesis: str) -> dict[str, float]:
+        if "Borrowers" in hypothesis:
+            return {"entailment": 0.01, "neutral": 0.02, "contradiction": 0.97}
+        return {"entailment": 0.97, "neutral": 0.02, "contradiction": 0.01}
+
+
+def test_synonym_only_claim_is_regrounded_to_the_cited_sentence():
+    from app.models.schemas import DraftClaim
+    from app.verification.pipeline import resolve_and_verify_claims
+    from tests.helpers import sample_store
+    st = sample_store()
+    sid = "acme_loan_policy_v3_p2_c2#s0"
+    draft = DraftClaim(claim_id="c1", text="Borrowers must be between 21 and 60 years of age at the time of application",
+                       claim_type="factual", source_ids=[sid])
+    shown, blocked = resolve_and_verify_claims([draft], st, _BorrowerNLI())
+    assert not blocked and len(shown) == 1
+    assert shown[0].text == "Applicants must be between 21 and 60 years of age at the time of application."
+
+
+def test_real_numeric_conflict_is_still_blocked_not_regrounded():
+    from app.models.schemas import DraftClaim
+    from app.verification.pipeline import resolve_and_verify_claims
+    from tests.helpers import sample_store
+    st = sample_store()
+    draft = DraftClaim(claim_id="c1", text="Borrowers must have a minimum credit score of 680 to qualify for a standard personal loan",
+                       claim_type="numeric", source_ids=["acme_loan_policy_v3_p2_c2#s1"])
+    shown, blocked = resolve_and_verify_claims([draft], st, _BorrowerNLI())
+    assert not shown and len(blocked) == 1
+    assert "numeric_date_mismatch" in (blocked[0].reason or "")

@@ -24,6 +24,11 @@ CONCISE_RETRY_SUFFIX = (
 _SYNONYM_KEYS = ("response", "responses", "answers", "answer", "results", "result", "items", "claim_list", "output")
 
 
+def _gpu_option() -> dict[str, int]:
+    """Explicit GPU layer count for Ollama, or nothing when `LLM_NUM_GPU` is unset (Ollama auto-fits)."""
+    return {"num_gpu": settings.llm_num_gpu} if settings.llm_num_gpu > 0 else {}
+
+
 class OllamaLLMProvider:
     def __init__(self, model: str | None = None, base_url: str | None = None):
         self.model = model or settings.ollama_model
@@ -35,6 +40,29 @@ class OllamaLLMProvider:
                 resp = client.get(f"{self.base_url}/api/tags")
                 return resp.status_code == 200
         except Exception:
+            return False
+
+    def warm(self) -> bool:
+        """Force Ollama to load the model into memory ahead of the first question.
+
+        A cold 7B load can take minutes and would otherwise blow the per-request LLM timeout, which shows up as
+        an unexplained "I don't have proof..." abstention. Best effort: returns False instead of raising.
+        """
+        payload = {
+            "model": self.model,
+            "prompt": "ok",
+            "stream": False,
+            "keep_alive": settings.llm_keep_alive,
+            "options": {"temperature": 0.0, "num_predict": 1, "num_ctx": settings.llm_num_ctx, **_gpu_option()},
+        }
+        try:
+            timeout = httpx.Timeout(settings.llm_warmup_timeout_seconds, connect=10.0)
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(f"{self.base_url}/api/generate", json=payload)
+                resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.warning("Ollama preload of %s failed (%s); the first question may be slow", self.model, e)
             return False
 
     def generate_json(self, prompt: str) -> dict[str, Any]:
@@ -53,14 +81,11 @@ class OllamaLLMProvider:
                 "temperature": 0.0 if max_tokens else settings.llm_temperature,
                 "num_ctx": settings.llm_num_ctx,
                 "num_predict": max_tokens or settings.llm_max_tokens,
+                **_gpu_option(),
             },
         }
         timeout = httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{self.base_url}/api/generate", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        raw = data.get("response", "")
+        raw = self._post_generate(payload, timeout)
         obj = _try_parse_json(raw)
         wants_claims = '"claims"' in prompt  # claim-drafting prompts only (translation prompts use another shape)
         if obj is not None and not (wants_claims and not _has_claims_shape(obj)):
@@ -68,11 +93,27 @@ class OllamaLLMProvider:
         # Unparseable / nothing salvageable / no `claims` key: ONE concise retry with an explicit JSON-shape reminder.
         logger.warning("LLM output unusable (%s chars); retrying once with a concise-output instruction", len(raw or ""))
         payload["prompt"] = prompt + CONCISE_RETRY_SUFFIX
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.post(f"{self.base_url}/api/generate", json=payload)
-            resp.raise_for_status()
-            raw = resp.json().get("response", "")
-        return _parse_json(raw)
+        return _parse_json(self._post_generate(payload, timeout))
+
+    def _post_generate(self, payload: dict[str, Any], timeout: httpx.Timeout) -> str:
+        """One `/api/generate` call, retried once on a timeout.
+
+        A cold model load (or an evicted model) is the usual cause of a first-call timeout; the load has finished
+        by the second attempt, so the retry turns a spurious abstention into a normal answer. The startup preload
+        in `app.main.lifespan` normally makes this a no-op."""
+        for attempt in range(2):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(f"{self.base_url}/api/generate", json=payload)
+                    resp.raise_for_status()
+                    return resp.json().get("response", "")
+            except httpx.TimeoutException:
+                if attempt:
+                    raise
+                logger.warning(
+                    "Ollama generate timed out after %ss (model load?); retrying once", settings.llm_timeout_seconds
+                )
+        raise RuntimeError("unreachable")
 
 
 class FakeLLMProvider:

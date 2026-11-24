@@ -24,6 +24,7 @@ from app.calculator.service import (
     missing_inputs,
     parse_amount,
     parse_months,
+    required_inputs,
 )
 from app.contradictions.detector import subjects_in
 from app.core.logging import get_logger
@@ -60,7 +61,12 @@ class TurnPlan:
 # ----------------------------------------------------------------------------- slot filling
 _INTERROGATIVE_START = re.compile(r"^\s*(?:what|which|who|whom|when|where|why|how|is|are|does|do|can|could|will|should|tell|explain|list|state)\b", re.I)
 _PERIOD_SPAN = re.compile(r"\d+(?:\.\d+)?\s*(?:day|week|month|year)s?\b", re.I)
-_AMOUNT_SPAN = re.compile(r"(?:₹|\brs\.?|\binr|\brupees?)\s*" + NUMBER_PATTERN + r"\s*(?:lakhs?|lacs?|crores?)?", re.I)
+_AMOUNT_MULT = r"lakhs?|lacs?|crores?|cr|k"
+_AMOUNT_SPAN = re.compile(
+    r"(?:₹|\brs\.?|\binr|\brupees?)\s*" + NUMBER_PATTERN + r"\s*(?:" + _AMOUNT_MULT + r")?"
+    r"|" + NUMBER_PATTERN + r"\s*(?:" + _AMOUNT_MULT + r")?\s*(?:rupees|inr|rs\.?|₹)(?=\s|$|[,.!?/])"
+    r"|" + NUMBER_PATTERN + r"\s*(?:" + _AMOUNT_MULT + r")(?=\s|$|[,.!?/])"
+    r"|" + NUMBER_PATTERN + r"\s*/-", re.I)
 _BARE_NUMBER = re.compile(r"(?<![\w.])(" + NUMBER_PATTERN + r")\s*(lakhs?|lacs?|crores?)?(?![\w%])", re.I)
 
 
@@ -150,6 +156,89 @@ def _slot_fill(question: str, history: list[ChatTurn]) -> TurnPlan | None:
     return TurnPlan(pipeline_question=merged, rewritten_question=merged, notes=["slot_fill_complete"])
 
 
+_CALC_SUBJECTS = {"late_fee": {"late payment fee"}, "interest": {"interest rate"}, "emi": {"interest rate"}}
+
+
+def _kind_from_history(history: list[ChatTurn]) -> str | None:
+    """The calculation kind of the recent turn(s), from verified pending state or the question/summary."""
+    for t in reversed(_recent(history)):
+        pending = t.pending_calculation
+        if isinstance(pending, dict) and pending.get("kind") in KINDS:
+            return pending["kind"]
+        calc = t.calculation_kind
+        if calc == "late_payment_fee":
+            return "late_fee"
+        if calc in KINDS:
+            return calc
+        if is_calculation_intent(t.question or ""):
+            return calc_kind(t.question or "")
+        subjects = subjects_in(t.answer_summary or "")
+        if "late payment fee" in subjects:
+            return "late_fee"
+        if "interest rate" in subjects:
+            return "interest"
+    return None
+
+
+def _history_inputs(history: list[ChatTurn]) -> dict[str, Decimal]:
+    """Recover the last known principal/period from earlier turns; never from answer results."""
+    known: dict[str, Decimal] = {}
+    for t in _recent(history):
+        pending = t.pending_calculation
+        if isinstance(pending, dict):
+            for key in ("principal", "months"):
+                value = _dec((pending.get("known") or {}).get(key))
+                if value is not None:
+                    known[key] = value
+        inputs = t.calculation_inputs
+        if isinstance(inputs, dict):
+            amount = _dec(inputs.get("overdue_amount"))
+            if amount is None:
+                amount = _dec(inputs.get("principal"))
+            if amount is not None:
+                known["principal"] = amount
+            if (months := _dec(inputs.get("months"))) is not None:
+                known["months"] = months
+            elif (periods := _dec(inputs.get("periods"))) is not None:
+                if inputs.get("rate_period") == "year":
+                    known["months"] = periods * 12
+                else:
+                    known["months"] = periods
+        question = t.question or ""
+        if (amount := parse_amount(question, allow_bare=True)) is not None:
+            known["principal"] = amount
+        if (months := parse_months(question)) is not None:
+            known["months"] = months
+    return known
+
+
+def _calc_followup(question: str, history: list[ChatTurn]) -> TurnPlan | None:
+    """'what about for 4 months?' after a completed calculation: reuse the earlier input(s), replace one slot.
+
+    This stays deterministic: the rewritten question is rebuilt from parsed numbers only, then goes through
+    the normal pipeline and Decimal calculator. It never copies a result or invents a missing input."""
+    if not history or not is_elliptical(question, history) or is_calculation_intent(question):
+        return None
+    new_amount, new_months = parse_amount(question, allow_bare=True), parse_months(question)
+    if new_amount is None and new_months is None:
+        return None
+    kind = _kind_from_history(history)
+    if kind is None:
+        return None
+    asked = set(subjects_in(question))
+    if asked and not asked <= _CALC_SUBJECTS[kind]:
+        return None  # a new subject, not a calculation slot change
+    known = _history_inputs(history)
+    if new_amount is not None:
+        known["principal"] = new_amount
+    if new_months is not None:
+        known["months"] = new_months
+    if any(key not in known for key in required_inputs(kind)):
+        return None
+    merged = _merge_question(kind, known)
+    return TurnPlan(pipeline_question=merged, rewritten_question=merged, notes=["calculation_followup"])
+
+
 def _calc_without_inputs(question: str) -> TurnPlan | None:
     """Turn 1: 'Calculate my late payment penalty ...' with no amount / period -> verified rate + ask, never guess."""
     if not is_calculation_intent(question):
@@ -159,7 +248,7 @@ def _calc_without_inputs(question: str) -> TurnPlan | None:
         return None  # complete request: normal pipeline + deterministic calculator
     kind = calc_kind(question)
     known = {}
-    if (a := parse_amount(question)) is not None:
+    if (a := parse_amount(question, allow_bare=True)) is not None:
         known["principal"] = a
     if (m := parse_months(question)) is not None:
         known["months"] = m
@@ -320,6 +409,9 @@ def rewrite_followup(question: str, history: list[ChatTurn], llm=None) -> tuple[
 def plan_turn(question: str, history: list[ChatTurn] | None, llm=None) -> TurnPlan:
     history = list(history or [])[-MAX_HISTORY_TURNS:]
     plan = _slot_fill(question, history)
+    if plan is not None:
+        return plan
+    plan = _calc_followup(question, history)
     if plan is not None:
         return plan
     plan = _calc_without_inputs(question)

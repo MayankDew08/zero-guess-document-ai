@@ -10,7 +10,7 @@ import { AbstentionCard } from './AbstentionCard'
 import { CalculationCard } from './CalculationCard'
 import { ClarifyCard } from './ClarifyCard'
 import { TraceCard } from './TraceCard'
-import { LoadingCard } from './LoadingCard'
+import { LoadingCard, PipelineRunCard } from './LoadingCard'
 import type { ClientStage } from './stages'
 import type { OpenEvidence } from './evidence'
 
@@ -28,8 +28,9 @@ export function StatusBadge({ status }: { status: AskResponse['status'] }) {
 
 const pct = (v: number) => `${Math.round(v * 100)}%`
 
-export function AnswerBlock({ response: r, onOpenEvidence, onClarifySubmit, onExportReport, clarifyActive, busy }: {
+export function AnswerBlock({ response: r, stages, onOpenEvidence, onClarifySubmit, onExportReport, clarifyActive, busy }: {
   response: AskResponse
+  stages: ClientStage[]
   onOpenEvidence: OpenEvidence
   onClarifySubmit: (baseQuestion: string, values: Record<string, string>) => void
   onExportReport: (requestId: string) => void
@@ -98,6 +99,7 @@ export function AnswerBlock({ response: r, onOpenEvidence, onClarifySubmit, onEx
         {r.claims.length ? <section className="space-y-2"><SectionLabel>Verified claims · {r.claims.length}</SectionLabel>{r.claims.map(c => <ClaimCard key={c.claim_id} claim={c} onOpenEvidence={onOpenEvidence} />)}</section> : null}
         {r.blocked_claims.length ? <BlockedClaims claims={r.blocked_claims} onOpenEvidence={onOpenEvidence} /> : null}
         {r.pipeline_trace ? <TraceCard trace={r.pipeline_trace} /> : null}
+        {stages.length ? <PipelineRunCard stages={stages} /> : null}
       </div>
     </article>
   )
@@ -114,5 +116,5 @@ export function TurnAnswer({ loading, error, response, elapsed, stages, ...rest 
   if (loading) return <LoadingCard elapsedSeconds={elapsed} stages={stages} />
   if (error) return <div role="alert" className="flex items-start gap-2 rounded-xl bg-rose-400/[0.07] px-4 py-3 text-sm text-rose-200 ring-1 ring-inset ring-rose-400/20"><XCircle aria-hidden="true" size={15} className="mt-0.5 shrink-0" /><span className="min-w-0 break-words">{error}</span></div>
   if (!response) return null
-  return <AnswerBlock response={response} {...rest} />
+  return <AnswerBlock response={response} stages={stages} {...rest} />
 }

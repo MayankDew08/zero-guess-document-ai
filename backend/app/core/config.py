@@ -36,6 +36,12 @@ class Settings:
     llm_timeout_seconds: float = _float("LLM_TIMEOUT_SECONDS", 120)
     llm_keep_alive: str = os.getenv("LLM_KEEP_ALIVE", "15m")
     llm_num_ctx: int = _int("LLM_NUM_CTX", 4096)
+    # GPU layers for Ollama (0 = let Ollama auto-fit). On a 4 GB card a 7B model gains ~2x from an explicit
+    # partial offload (auto-fit under-offloads; over-offloading spills into shared memory and is slower).
+    llm_num_gpu: int = _int("LLM_NUM_GPU", 0)
+    # Preloading a 7B model into VRAM can take minutes on a cold start; that load must not eat the per-request
+    # generation timeout, so it gets its own (generous) budget at startup.
+    llm_warmup_timeout_seconds: float = _float("LLM_WARMUP_TIMEOUT_SECONDS", 600)
 
     # All HuggingFace models stay on CPU so 100% of GPU VRAM is free for Ollama (qwen2.5:7b-instruct).
     embedding_device: str = os.getenv("EMBEDDING_DEVICE", "cpu")

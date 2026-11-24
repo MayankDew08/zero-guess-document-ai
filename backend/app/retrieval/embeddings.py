@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Protocol
 
 import numpy as np
@@ -12,6 +13,9 @@ logger = get_logger(__name__)
 
 class EmbeddingProvider(Protocol):
     def embed(self, texts: list[str]) -> np.ndarray: ...
+
+
+_LOAD_LOCK = threading.Lock()
 
 
 class SentenceTransformerEmbeddingProvider:
@@ -40,10 +44,15 @@ class SentenceTransformerEmbeddingProvider:
     def _load(self):
         if self._model is not None:
             return
-        from sentence_transformers import SentenceTransformer
+        # Double-checked locking: a startup warm-up and the first request must not each load their own copy
+        # (that doubles RAM/disk I/O and breaks the 16 GB budget).
+        with _LOAD_LOCK:
+            if self._model is not None:
+                return
+            from sentence_transformers import SentenceTransformer
 
-        logger.info("Loading embedding model %s on %s", self.model_name, self.device)
-        self._model = SentenceTransformer(self.model_name, device=self.device)
+            logger.info("Loading embedding model %s on %s", self.model_name, self.device)
+            self._model = SentenceTransformer(self.model_name, device=self.device)
 
     def embed(self, texts: list[str]) -> np.ndarray:
         if not texts:

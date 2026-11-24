@@ -16,10 +16,15 @@ from app.verification.numeric import NUMBER_PATTERN, parse_amount_value
 
 getcontext().prec = 28
 
+_AMOUNT_MULT = r"lakhs?|lacs?|crores?|cr|k"
 _AMOUNT_RE = re.compile(
-    r"(?:₹|\brs\.?|\binr|\brupees?)\s*(?P<a>" + NUMBER_PATTERN + r")\s*(?P<am>lakhs?|lacs?|crores?)?"
-    r"|(?P<b>" + NUMBER_PATTERN + r")\s*(?P<bm>lakhs?|lacs?|crores?)?\s*(?:rupees|inr)\b", re.I)
-_PERIOD_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(day|week|month|year)s?\b", re.I)
+    r"(?:₹|\brs\.?|\binr|\brupees?)\s*(?P<a>" + NUMBER_PATTERN + r")\s*(?P<am>" + _AMOUNT_MULT + r")?"
+    r"|(?P<b>" + NUMBER_PATTERN + r")\s*(?P<bm>" + _AMOUNT_MULT + r")?\s*(?:rupees|inr|rs\.?|₹)(?=\s|$|[,.!?/])"
+    r"|(?P<c>" + NUMBER_PATTERN + r")\s*(?P<cm>" + _AMOUNT_MULT + r")(?=\s|$|[,.!?/])"
+    r"|(?P<d>" + NUMBER_PATTERN + r")\s*/-", re.I)
+_PERIOD_RE = re.compile(r"(\d+(?:\.\d+)?)[\s-]*(day|d|week|wk|w|month|mo|mth|m|year|yr|y)s?\b", re.I)
+_BARE_AMOUNT_RE = re.compile(
+    r"(?<![\w.])(?P<n>" + NUMBER_PATTERN + r")(?![\w%]|[\s-]*(?:day|d|week|wk|w|month|mo|mth|m|year|yr|y)s?\b|[-/.]\d)", re.I)
 _CALC_WORDS = re.compile(r"\b(calculate|compute|work\s+out|how\s+much|total)\b|गणना|कितना", re.I)
 _TOPIC_WORDS = re.compile(r"\b(fee|penalty|charge|interest|emi|instal?ment)\b|शुल्क|ब्याज", re.I)
 
@@ -37,12 +42,19 @@ def _num(v: Decimal) -> str:
     return f"{v.normalize():f}" if v != v.to_integral_value() else f"{int(v)}"
 
 
-def parse_amount(question: str) -> Decimal | None:
+def parse_amount(question: str, allow_bare: bool = False) -> Decimal | None:
     m = _AMOUNT_RE.search(question)
-    if not m:
-        return None
-    num, mult = (m.group("a"), m.group("am")) if m.group("a") else (m.group("b"), m.group("bm"))
-    return Decimal(str(parse_amount_value(num, mult)))
+    if m:
+        for num_key, mult_key in (("a", "am"), ("b", "bm"), ("c", "cm"), ("d", None)):
+            if m.group(num_key):
+                num, mult = m.group(num_key), m.group(mult_key) if mult_key else None
+                return Decimal(str(parse_amount_value(num, mult)))
+    if allow_bare:
+        for bare in _BARE_AMOUNT_RE.finditer(question):
+            value = parse_amount_value(bare.group("n"))
+            if value >= 1_000:  # bare small numbers are section/clause/circular ids, not money
+                return Decimal(str(value))
+    return None
 
 
 def parse_months(question: str) -> Decimal | None:
@@ -50,7 +62,12 @@ def parse_months(question: str) -> Decimal | None:
     if not m:
         return None
     n, unit = Decimal(m.group(1)), m.group(2).lower()
-    return {"month": n, "year": n * 12, "week": n * 12 / 52, "day": n / 30}[unit]
+    return {
+        "month": n, "mo": n, "mth": n, "m": n,
+        "year": n * 12, "yr": n * 12, "y": n * 12,
+        "week": n * 12 / 52, "wk": n * 12 / 52, "w": n * 12 / 52,
+        "day": n / 30, "d": n / 30,
+    }[unit]
 
 
 def _kind(question: str) -> str:
@@ -103,7 +120,7 @@ def _citation(app_store: AppStore, sentence_id: str) -> Citation | None:
 def calculate(question: str, app_store: AppStore,
               contradictions: list[Contradiction] | None = None) -> tuple[Calculation | None, list[str]]:
     """Return (calculation, missing_inputs). `calculation` is None if it cannot be computed."""
-    amount = parse_amount(question)
+    amount = parse_amount(question, allow_bare=True)
     months = parse_months(question)
     kind = _kind(question)
     missing: list[str] = []
@@ -216,7 +233,7 @@ def required_inputs(kind: str) -> list[str]:
 
 
 def missing_inputs(question: str) -> list[str]:
-    have = {"principal": parse_amount(question) is not None, "months": parse_months(question) is not None}
+    have = {"principal": parse_amount(question, allow_bare=True) is not None, "months": parse_months(question) is not None}
     return [k for k in required_inputs(_kind(question)) if not have[k]]
 
 

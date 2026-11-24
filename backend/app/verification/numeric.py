@@ -6,7 +6,7 @@ from datetime import datetime
 # Numbers incl. Indian grouping (1,00,000) and optional lakh/crore multiplier; optional currency prefix.
 NUMBER_PATTERN = r"\d+(?:,\d{2,3})*(?:\.\d+)?"
 _MULT = {"lakh": 100_000, "lakhs": 100_000, "lac": 100_000, "lacs": 100_000,
-         "crore": 10_000_000, "crores": 10_000_000, "cr": 10_000_000}
+         "crore": 10_000_000, "crores": 10_000_000, "cr": 10_000_000, "k": 1_000}
 _NUM_RE = re.compile(
     r"(?<!\w)(?P<cur>₹|rs\.?|inr|\$|€|£)?\s*(?P<num>" + NUMBER_PATTERN + r")\s*(?P<mult>lakhs?|lacs?|crores?|cr\b)?\s*(?P<pct>%)?",
     re.IGNORECASE,

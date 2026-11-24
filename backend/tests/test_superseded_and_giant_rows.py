@@ -5,7 +5,7 @@ from app.core.config import settings
 from app.models.schemas import Chunk, RetrievedChunk, Sentence
 from app.qa.llm import FakeLLMProvider
 from app.qa.prompt import MAX_TABLE_ROW_CHARS, build_claim_prompt
-from app.qa.service import ask_question, superseded_for_current_rule
+from app.qa.service import ask_question, explicit_version_doc_ids, superseded_for_current_rule
 from app.retrieval.embeddings import FakeEmbeddingProvider
 from app.retrieval.reranker import FakeRerankerProvider
 from app.verification.nli import FakeNLIProvider
@@ -65,6 +65,41 @@ def test_older_version_history_and_conflict_questions_work_normally():
     resp, llm = _ask(st, "What was the late payment fee in v1?", [{"claims": [_claim("c1", old)], "missing_evidence": []}])
     assert "SUPERSEDED BY" not in llm.calls[0]
     assert [c.citations[0].doc_id for c in resp.claims] == ["acme_loan_policy_v1"] and resp.blocked_claims_count == 0
+
+
+def test_named_version_scopes_retrieval_and_suppresses_the_active_chain_note():
+    st = sample_store()
+    old = _sentence(st, "acme_loan_policy_v1", "late payment")
+    resp, llm = _ask(st, "What was the late payment fee in v1?", [{"claims": [_claim("c1", old)], "missing_evidence": []}])
+    prompt = llm.calls[0]
+    assert "Acme_Loan_Policy_v1.pdf | page" in prompt
+    for other in ("Acme_Loan_Policy_v2.pdf", "Acme_Loan_Policy_v3.pdf", "Acme_Operations_Notice.pdf"):
+        assert f"{other} | page" not in prompt
+    assert [c.citations[0].doc_id for c in resp.claims] == ["acme_loan_policy_v1"]
+    assert resp.contradictions == [] and "Conflicting sources" not in resp.answer
+    assert "latest active version" not in resp.answer
+
+
+def test_explicit_version_scope_only_for_one_unambiguous_target():
+    st = sample_store()
+    assert explicit_version_doc_ids("What is the late payment fee in v1?", st) == ["acme_loan_policy_v1"]
+    assert explicit_version_doc_ids("What is the late payment fee in Acme_Loan_Policy_v2.pdf?", st) == ["acme_loan_policy_v2"]
+    assert explicit_version_doc_ids("Compare v1 and v3", st) == []
+    assert explicit_version_doc_ids("What changed between versions?", st) == []
+    assert explicit_version_doc_ids(CURRENT_Q, st) == []
+
+
+def test_answer_terminates_each_verified_claim_so_table_rows_do_not_run_together():
+    st = sample_store()
+    resp, _ = _ask(st, "What are the processing fee and bounce charge in the latest policy?", [{
+        "claims": [
+            {"claim_id": "c1", "text": "Processing Fee is INR 1,000 at disbursement", "claim_type": "numeric",
+             "source_ids": ["acme_loan_policy_v3_p1_c4#s0"]},
+            {"claim_id": "c2", "text": "Bounce Charge is INR 750 per bounced EMI", "claim_type": "numeric",
+             "source_ids": ["acme_loan_policy_v3_p1_c4#s2"]},
+        ], "missing_evidence": []}])
+    assert "disbursement. Bounce Charge" in resp.answer
+    assert resp.answer.endswith("is the latest active version.")
 
 
 def test_no_dropping_when_the_amending_document_was_not_retrieved():

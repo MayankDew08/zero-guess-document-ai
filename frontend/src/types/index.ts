@@ -112,6 +112,8 @@ export interface ChatTurn {
   question: string;
   answer_summary: string;
   pending_calculation: Record<string, any> | null;
+  calculation_kind?: string | null;
+  calculation_inputs?: Record<string, any> | null;
 }
 
 export interface WorkspaceStats {

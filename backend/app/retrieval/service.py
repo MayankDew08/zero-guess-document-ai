@@ -86,7 +86,7 @@ def retrieve(
         return RetrievalResult(query=query, chunks=[], total_indexed_chunks=0, crag_passed=False, max_rerank_score=None)
 
     # Build per-query filtered indices if doc_ids filter or index missing
-    if app_store.bm25 is None or app_store.embeddings is None or doc_ids:
+    if app_store.bm25 is None or app_store.embeddings is None or doc_ids is not None:
         filtered_store_chunks = chunks
         bm25 = BM25Index(filtered_store_chunks)
         bm25_ids = [c.chunk_id for c in filtered_store_chunks]

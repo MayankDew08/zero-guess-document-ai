@@ -16,9 +16,9 @@ export function ComplianceBanner({ mode, stats, docCount }: { mode: Mode; stats:
   const bad = (stats?.unresolved_contradictions_count ?? 0) > 0
   const subjects = stats && stats.contradiction_subjects.length > 0 ? stats.contradiction_subjects.join(', ') : ''
   return (
-    <div data-testid="banner-admin" className={`shrink-0 border-b border-white/[0.06] border-l-2 bg-[#0D1219] px-4 py-1.5 text-[10px] ${bad ? 'border-l-rose-400' : 'border-l-emerald-400'}`}>
+    <div data-testid="banner-admin" className={`mx-3 mt-2 shrink-0 rounded-lg border bg-[#0D1219] px-4 py-1.5 text-[10px] ${bad ? 'border-rose-400/25' : 'border-white/[0.08]'}`}>
       <div className="flex min-h-6 items-center gap-x-3 gap-y-1 md:flex-wrap">
-        <span className="hidden font-semibold uppercase tracking-[0.12em] text-zinc-300 md:inline">Compliance audit · Bank official corpus</span>
+        <span className="hidden items-center gap-1.5 font-semibold uppercase tracking-[0.12em] text-zinc-300 md:flex"><span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${bad ? 'bg-red-500' : 'bg-emerald-400'}`} />Compliance audit · Bank official corpus</span>
         {stats ? (
           <>
             <Chip tone={bad ? 'rose' : 'emerald'} className="shrink-0 px-2 py-1"><ShieldAlert aria-hidden="true" size={11} />{stats.unresolved_contradictions_count}<span className="hidden sm:inline">&nbsp;unresolved contradiction{stats.unresolved_contradictions_count === 1 ? '' : 's'}</span><span className="sm:hidden">&nbsp;conflict{stats.unresolved_contradictions_count === 1 ? '' : 's'}</span></Chip>

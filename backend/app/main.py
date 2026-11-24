@@ -30,7 +30,10 @@ from app.ingestion.service import (
     remove_document,
 )
 from app.models.schemas import AskRequest, AskResponse, ReportRequest, ReportResponse
+from app.qa.llm import OllamaLLMProvider
 from app.qa.service import ask_question
+from app.retrieval.reranker import CrossEncoderRerankerProvider
+from app.verification.nli import HFNLIProvider
 
 setup_logging()
 logger = get_logger(__name__)
@@ -59,15 +62,36 @@ async def lifespan(_: FastAPI):
             logger.info("[%s] Loaded persisted index: %s docs, %s chunks", ws, len(st.documents), len(st.chunks))
             to_warm.append(st)
 
-    if to_warm:
-        async def _warm() -> None:  # embed in the background (one workspace at a time) so the API binds immediately
-            for st in to_warm:
-                try:
-                    await asyncio.to_thread(rebuild_runtime_index, None, st)
-                except Exception as e:
-                    logger.warning("[%s] Failed to rebuild runtime index on startup: %s", st.workspace, e)
+    async def _warm() -> None:
+        """Warm every local model ONCE, in order, in the background (the API binds immediately).
 
-        asyncio.create_task(_warm())
+        Ordering matters: the HF models are memory/disk heavy and Ollama preloading is too, so running them
+        concurrently makes a cold boot thrash the disk and turns the first question into minutes of dead air.
+        """
+        for st in to_warm:
+            try:
+                await asyncio.to_thread(rebuild_runtime_index, None, st)
+            except Exception as e:
+                logger.warning("[%s] Failed to rebuild runtime index on startup: %s", st.workspace, e)
+        # The index rebuild above loads the embedding model; preload the other two singletons the first question
+        # needs, otherwise their one-time load (~14s + ~6s) shows up as unexplained latency on the first answer.
+        preloads: list[Any] = []
+        if settings.enable_reranker and (settings.reranker_provider or "none").lower() not in {"none", "off", "disabled", "false"}:
+            preloads.append(CrossEncoderRerankerProvider.get_instance())
+        if settings.enable_nli and (settings.nli_provider or "hf").lower() in {"hf", "huggingface"}:
+            preloads.append(HFNLIProvider.get_instance())
+        for provider in preloads:
+            try:
+                await asyncio.to_thread(provider.preload)
+            except Exception as e:
+                logger.warning("Failed to preload %s: %s", type(provider).__name__, e)
+        # Last: pull the generator into RAM/VRAM so the first question doesn't pay the cold load either.
+        if (settings.llm_provider or "ollama").strip().lower() not in {"mock", "fake", "heuristic", "extractive"}:
+            if await asyncio.to_thread(OllamaLLMProvider().warm):
+                logger.info("Preloaded Ollama model %s", settings.ollama_model)
+        logger.info("Warm-up complete: all local models loaded")
+
+    asyncio.create_task(_warm())
     yield
 
 

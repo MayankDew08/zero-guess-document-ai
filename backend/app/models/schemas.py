@@ -229,6 +229,8 @@ class ChatTurn(BaseModel):
     question: str = ""
     answer_summary: str = ""
     pending_calculation: dict | None = None
+    calculation_kind: str | None = None
+    calculation_inputs: dict | None = None
 
 
 class MissingField(BaseModel):

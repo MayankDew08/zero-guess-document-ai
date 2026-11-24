@@ -14,6 +14,34 @@ from app.verification.nli import NLIProvider
 from app.verification.numeric import check_numeric_date_match
 
 _SID_FIX_RE = re.compile(r"^(?P<c>.+?)[#_ ]s?(?P<n>\d+)$")
+_LIST_MARKER_RE = re.compile(r"^\s*(?:\([A-Za-z0-9]{1,3}\)|[A-Za-z0-9]{1,3}[.)])\s+")
+_NEGATION_RE = re.compile(r"\b(?:not|no|never|cannot|can't|doesn't|don't|isn't|aren't|won't|cannot|must\s+not|shall\s+not)\b", re.I)
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _verbatim_restatement(claim_text: str, quote: str) -> str | None:
+    """A near-copy claim that the NLI model rejected only because of a synonym (e.g. Borrowers vs Applicants)
+    can be re-grounded to the cited sentence itself. Returns the cleaned quote, or None when the claim carries
+    extra/negated content and must stay blocked."""
+    clean = _LIST_MARKER_RE.sub("", quote or "").strip()
+    if not clean or len(clean) > 400:
+        return None
+    claim_tokens = _tokens(claim_text)
+    quote_tokens = _tokens(clean)
+    if len(claim_tokens) < 4 or not quote_tokens:
+        return None
+    if _NEGATION_RE.search(claim_text or "") and not _NEGATION_RE.search(clean):
+        return None
+    if len(claim_tokens & quote_tokens) / len(claim_tokens) < 0.85:
+        return None
+    return clean
+
+
+def _entails(scores: dict[str, float]) -> bool:
+    return bool(scores) and max(scores, key=scores.get) == "entailment" and scores.get("entailment", 0.0) >= settings.nli_entailment_threshold
 
 
 def repair_source_id(sid: str, store: AppStore) -> str:
@@ -111,9 +139,6 @@ def resolve_and_verify_claims(
             nli_scores, nli_label = {}, "skipped"
             entail_ok, contradicted = True, False
         else:
-            def _entails(sc: dict) -> bool:
-                return bool(sc) and max(sc, key=sc.get) == "entailment" and sc.get("entailment", 0.0) >= settings.nli_entailment_threshold
-
             # Contextual premise first (helps bullets/sub-clauses); the plain quote is the fallback so a long
             # heading prefix can never turn a clean sentence into a false "contradiction".
             nli_scores = nli_provider.predict(premise=premise, hypothesis=claim.text)
@@ -137,6 +162,20 @@ def resolve_and_verify_claims(
         notes = [f"nli={nli_label}", f"numeric_match={num_ok}"]
         if num_reason:
             notes.append(num_reason)
+
+        # NLI can call a synonym-only paraphrase ("Borrowers" vs "Applicants") a contradiction. If the claim is
+        # otherwise a near-copy of the quote, re-ground it to the stored sentence and verify that exact sentence.
+        if not entail_ok and num_ok and nli_provider is not None:
+            restated = _verbatim_restatement(claim.text, merged_quote)
+            if restated and restated != claim.text:
+                restated_scores = nli_provider.predict(premise=merged_quote, hypothesis=restated)
+                if _entails(restated_scores):
+                    claim.text = restated
+                    nli_scores, nli_label = restated_scores, max(restated_scores, key=restated_scores.get)
+                    entail_ok, contradicted = True, False
+                    notes = [f"nli={nli_label}", "numeric_match=True", "restated_from_cited_quote"]
+                    for c in claim.citations:
+                        c.nli_label, c.nli_scores = nli_label, nli_scores
 
         if entail_ok and num_ok:
             claim.status = "supported"

@@ -91,7 +91,7 @@ export function LibrarySidebar({ mode, docs, summary, pending, progress, busy, c
               <section className="mt-5">
                 <div className="mb-2 flex items-center gap-2 px-1"><Activity aria-hidden="true" size={13} className="text-zinc-500" /><h2 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Corpus health</h2></div>
                 <div className="grid grid-cols-2 gap-1.5">
-                  {stats.map(([label, value]) => <div key={label} className="rounded-lg bg-[#10151D] px-2.5 py-2"><div className="font-mono text-[14px] tabular-nums text-zinc-200">{value}</div><div className="mt-0.5 text-[9px] leading-3 text-zinc-600">{label}</div></div>)}
+                  {stats.map(([label, value]) => <div key={label} className="rounded-lg bg-[#10151D] px-2.5 py-2"><div className="font-mono text-[14px] tabular-nums text-zinc-200">{value}</div><div className="mt-0.5 text-[9px] leading-3 text-slate-400">{label}</div></div>)}
                 </div>
                 <div className={`mt-3 flex items-center gap-2 px-1 text-[10px] ${summary.indexed ? 'text-emerald-300' : 'text-amber-300'}`}><span className={`h-1.5 w-1.5 rounded-full ${summary.indexed ? 'bg-emerald-400' : 'bg-amber-400'}`} />Vector index {summary.indexed ? 'ready' : 'building…'}</div>
               </section>

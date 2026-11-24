@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Protocol
 
 from app.core.config import settings
@@ -10,6 +11,9 @@ logger = get_logger(__name__)
 
 class RerankerProvider(Protocol):
     def rerank(self, query: str, texts: list[str]) -> list[float]: ...
+
+
+_LOAD_LOCK = threading.Lock()
 
 
 class CrossEncoderRerankerProvider:
@@ -35,9 +39,18 @@ class CrossEncoderRerankerProvider:
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def preload(self) -> None:
+        """Load now (startup warm-up) so the first question doesn't pay the ~14s model load as dead air."""
+        self._load()
+
     def _load(self):
         if self._model is not None:
             return
+        with _LOAD_LOCK:  # one load only, even if the startup warm-up and a request race
+            if self._model is None:
+                self._load_locked()
+
+    def _load_locked(self):
         import torch
         from sentence_transformers import CrossEncoder
 
